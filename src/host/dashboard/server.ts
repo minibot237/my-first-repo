@@ -38,8 +38,9 @@ export function startDashboard(): void {
   });
 
   wss.on("connection", (ws) => {
-    // Send recent history to new clients
+    // Send recent history to new clients (skip session events — they're ephemeral)
     for (const event of recentEvents) {
+      if (event.kind.startsWith("session_")) continue;
       ws.send(JSON.stringify(event));
     }
 
