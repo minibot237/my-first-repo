@@ -1,0 +1,19 @@
+{
+  "name": "minibot",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "supervisor": "node dist/host/supervisor.js",
+    "agent": "node dist/container/agent.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.8"
+  },
+  "dependencies": {
+    "ws": "^8.19.0"
+  }
+}
