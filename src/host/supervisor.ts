@@ -229,10 +229,10 @@ async function main() {
   // Clean up stale socket
   if (fs.existsSync(SOCKET_PATH)) fs.unlinkSync(SOCKET_PATH);
 
-  let containerId: string;
+  const containerId = "core";
 
   if (RUNTIME === "docker") {
-    const listenPromise = listenForAgent(SOCKET_PATH, "pending-docker");
+    const listenPromise = listenForAgent(SOCKET_PATH, containerId);
 
     const handle = await runtime.start(IMAGE_TAG, {
       rm: true,
@@ -240,11 +240,7 @@ async function main() {
       env: { SOCKET_PATH: CONTAINER_SOCKET, AGENT_MODE: "connect" },
     });
 
-    containerId = handle.id.slice(0, 12);
-    // Re-register with real ID
-    const sock = await listenPromise;
-    containerSockets.delete("pending-docker");
-    containerSockets.set(containerId, sock);
+    await listenPromise;
     emitDashboard("container_start", containerId, { runtime: "docker", imageTag: IMAGE_TAG });
 
     log("container running, dashboard active — press Ctrl+C to stop");
@@ -264,7 +260,6 @@ async function main() {
       env: { SOCKET_PATH: CONTAINER_SOCKET },
     });
 
-    containerId = handle.id.slice(0, 12);
     emitDashboard("container_start", containerId, { runtime: "apple-containers", imageTag: IMAGE_TAG });
 
     await waitForSocket(SOCKET_PATH);

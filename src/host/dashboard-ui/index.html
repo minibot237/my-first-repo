@@ -12,11 +12,11 @@
     color: #e0e0e0;
     height: 100vh;
     overflow: hidden;
+    user-select: none;
   }
 
   #app {
-    display: grid;
-    grid-template-columns: 30% 70%;
+    display: flex;
     height: 100vh;
   }
 
@@ -24,7 +24,8 @@
   #command-panel {
     display: flex;
     flex-direction: column;
-    border-right: 1px solid #333;
+    width: 30%;
+    min-width: 120px;
     height: 100vh;
   }
 
@@ -65,24 +66,50 @@
     outline: none;
   }
 
+  /* --- Resize handles --- */
+  .resize-h {
+    width: 5px;
+    min-width: 5px;
+    cursor: col-resize;
+    background: #333;
+    flex-shrink: 0;
+  }
+
+  .resize-h:hover, .resize-h.active { background: #555; }
+
+  .resize-v {
+    height: 5px;
+    min-height: 5px;
+    cursor: row-resize;
+    background: #333;
+    flex-shrink: 0;
+  }
+
+  .resize-v:hover, .resize-v.active { background: #555; }
+
   /* --- Right: VM Panels --- */
   #vm-panels {
     display: flex;
     flex-direction: column;
+    flex: 1;
+    min-width: 200px;
     height: 100vh;
     overflow-y: auto;
   }
 
   .vm-panel {
-    border-bottom: 1px solid #333;
+    display: flex;
+    flex-direction: column;
     padding: 12px 16px;
-    min-height: 120px;
+    min-height: 80px;
+    height: 360px;
+    overflow: hidden;
     flex-shrink: 0;
-    transition: all 0.2s;
   }
 
   .vm-panel.focused {
     flex: 1;
+    height: auto;
     min-height: unset;
   }
 
@@ -94,6 +121,7 @@
     gap: 12px;
     margin-bottom: 8px;
     cursor: pointer;
+    flex-shrink: 0;
   }
 
   .vm-status {
@@ -129,48 +157,72 @@
 
   /* Channel sections */
   .vm-channels {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
+    display: flex;
+    flex: 1;
+    min-height: 0;
     margin-top: 6px;
+    overflow: hidden;
   }
 
   .channel {
+    display: flex;
+    flex-direction: column;
+    min-width: 80px;
+    overflow: hidden;
   }
+
+  .channel:first-child { width: 50%; }
+  .channel:last-child { flex: 1; }
 
   .channel-label {
     font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 1px;
     margin-bottom: 2px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #333;
+    flex-shrink: 0;
   }
 
   .channel-label.ops { color: #fbbf24; }
   .channel-label.work { color: #60a5fa; }
 
+  .hb-toggle {
+    font-size: 11px;
+    text-transform: none;
+    letter-spacing: 0;
+    color: #666;
+    cursor: pointer;
+    margin-left: 6px;
+    user-select: none;
+  }
+
+  .hb-toggle input { vertical-align: middle; cursor: pointer; }
+
+  .channel.hide-heartbeats .msg-heartbeat { display: none; }
+
   .channel-messages {
     font-size: 13px;
     line-height: 1.5;
-    max-height: 80px;
-    overflow-y: hidden;
-  }
-
-  .vm-panel.focused .channel-messages {
-    max-height: none;
     overflow-y: auto;
+    flex: 1;
+    min-height: 0;
   }
 
   .vm-detail {
     margin-top: 8px;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
 
   .vm-detail .channel-messages {
-    max-height: 300px;
     overflow-y: auto;
   }
 
   /* Messages */
-  .msg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .msg { white-space: pre-wrap; word-break: break-all; }
   .msg .ts { color: #555; }
   .msg .dir-in { color: #4ade80; }
   .msg .dir-out { color: #60a5fa; }
@@ -206,6 +258,12 @@
   }
   #connection-status.connected { color: #4ade80; }
   #connection-status.disconnected { color: #ef4444; }
+
+  /* Disable text selection while dragging */
+  body.resizing { cursor: col-resize; }
+  body.resizing-v { cursor: row-resize; }
+  body.resizing *, body.resizing-v * { user-select: none !important; pointer-events: none !important; }
+  body.resizing .resize-h, body.resizing-v .resize-v { pointer-events: auto !important; }
 </style>
 </head>
 <body>
@@ -219,13 +277,14 @@
     </div>
     <div id="connection-status" class="disconnected">disconnected</div>
   </div>
+  <div class="resize-h" id="main-resize"></div>
   <div id="vm-panels">
     <div id="no-vms">waiting for containers...</div>
   </div>
 </div>
 
 <script>
-const vms = new Map(); // containerId -> { el, ops: [], work: [], status, focused }
+const vms = new Map();
 let ws;
 let filter = null;
 
@@ -242,6 +301,80 @@ function logCommand(text, cls = '') {
   el.scrollTop = el.scrollHeight;
 }
 
+// --- Drag resize helper ---
+
+function makeDragH(handle, getLeft, getRight) {
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const left = getLeft();
+    const right = getRight();
+    if (!left || !right) return;
+    const startX = e.clientX;
+    const startLeftW = left.getBoundingClientRect().width;
+    const startRightW = right.getBoundingClientRect().width;
+    handle.classList.add('active');
+    document.body.classList.add('resizing');
+
+    function onMove(e) {
+      const dx = e.clientX - startX;
+      const newLeft = Math.max(120, startLeftW + dx);
+      const newRight = Math.max(80, startRightW - dx);
+      left.style.width = newLeft + 'px';
+      left.style.flex = 'none';
+      right.style.width = newRight + 'px';
+      right.style.flex = 'none';
+    }
+
+    function onUp() {
+      handle.classList.remove('active');
+      document.body.classList.remove('resizing');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+function makeDragV(handle, getPanel) {
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const panel = getPanel();
+    if (!panel) return;
+    const startY = e.clientY;
+    const startH = panel.getBoundingClientRect().height;
+    handle.classList.add('active');
+    document.body.classList.add('resizing-v');
+
+    function onMove(e) {
+      const dy = e.clientY - startY;
+      const newH = Math.max(80, startH + dy);
+      panel.style.height = newH + 'px';
+      panel.style.flex = 'none';
+    }
+
+    function onUp() {
+      handle.classList.remove('active');
+      document.body.classList.remove('resizing-v');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+// --- Main horizontal resize: command panel <-> vm panels ---
+makeDragH(
+  document.getElementById('main-resize'),
+  () => document.getElementById('command-panel'),
+  () => document.getElementById('vm-panels')
+);
+
+// --- VM creation ---
+
 function ensureVM(id) {
   if (vms.has(id)) return vms.get(id);
 
@@ -253,45 +386,79 @@ function ensureVM(id) {
   panel.className = 'vm-panel';
   panel.id = 'vm-' + id;
 
-  panel.innerHTML = `
-    <div class="vm-header">
-      <div class="vm-status"></div>
-      <span class="vm-id">${id}</span>
-      <span class="vm-runtime"></span>
-      <span class="vm-close">[x]</span>
-    </div>
-    <div class="vm-channels">
-      <div class="channel">
-        <div class="channel-label ops">ops</div>
-        <div class="channel-messages" data-channel="ops"></div>
-      </div>
-      <div class="channel">
-        <div class="channel-label work">work</div>
-        <div class="channel-messages" data-channel="work"></div>
-      </div>
-    </div>
-    <div class="vm-detail">
-      <div class="vm-channels">
-        <div class="channel">
-          <div class="channel-label ops">ops (full)</div>
-          <div class="channel-messages" data-channel="ops-detail"></div>
-        </div>
-        <div class="channel">
-          <div class="channel-label work">work (full)</div>
-          <div class="channel-messages" data-channel="work-detail"></div>
-        </div>
-      </div>
-    </div>
+  const opsChannel = document.createElement('div');
+  opsChannel.className = 'channel';
+  opsChannel.innerHTML = `<div class="channel-label ops">ops <label class="hb-toggle"><input type="checkbox" data-hb-filter checked> hb</label></div><div class="channel-messages" data-channel="ops"></div>`;
+
+  const workChannel = document.createElement('div');
+  workChannel.className = 'channel';
+  workChannel.innerHTML = `<div class="channel-label work">work</div><div class="channel-messages" data-channel="work"></div>`;
+
+  const channelResize = document.createElement('div');
+  channelResize.className = 'resize-h';
+
+  const channels = document.createElement('div');
+  channels.className = 'vm-channels';
+  channels.appendChild(opsChannel);
+  channels.appendChild(channelResize);
+  channels.appendChild(workChannel);
+
+  // Wire up ops<->work horizontal resize
+  makeDragH(channelResize, () => opsChannel, () => workChannel);
+
+  const header = document.createElement('div');
+  header.className = 'vm-header';
+  header.innerHTML = `
+    <div class="vm-status"></div>
+    <span class="vm-id">${id.toUpperCase()}</span>
+    <span class="vm-runtime"></span>
+    <span class="vm-close">[x]</span>
   `;
 
-  panel.querySelector('.vm-header').addEventListener('click', (e) => {
+  // Detail section for focus mode
+  const detailOps = document.createElement('div');
+  detailOps.className = 'channel';
+  detailOps.innerHTML = `<div class="channel-label ops">ops (full) <label class="hb-toggle"><input type="checkbox" data-hb-filter checked> hb</label></div><div class="channel-messages" data-channel="ops-detail"></div>`;
+
+  const detailWork = document.createElement('div');
+  detailWork.className = 'channel';
+  detailWork.innerHTML = `<div class="channel-label work">work (full)</div><div class="channel-messages" data-channel="work-detail"></div>`;
+
+  const detailResize = document.createElement('div');
+  detailResize.className = 'resize-h';
+
+  const detailChannels = document.createElement('div');
+  detailChannels.className = 'vm-channels';
+  detailChannels.appendChild(detailOps);
+  detailChannels.appendChild(detailResize);
+  detailChannels.appendChild(detailWork);
+
+  makeDragH(detailResize, () => detailOps, () => detailWork);
+
+  const detail = document.createElement('div');
+  detail.className = 'vm-detail';
+  detail.appendChild(detailChannels);
+
+  panel.appendChild(header);
+  panel.appendChild(channels);
+  panel.appendChild(detail);
+
+  // Wire up heartbeat filter checkboxes
+  panel.querySelectorAll('[data-hb-filter]').forEach((cb) => {
+    cb.addEventListener('click', (e) => e.stopPropagation());
+    cb.addEventListener('change', () => {
+      const container = cb.closest('.channel');
+      container.classList.toggle('hide-heartbeats', !cb.checked);
+    });
+  });
+
+  header.addEventListener('click', (e) => {
     if (e.target.classList.contains('vm-close')) {
       vm.focused = false;
       panel.classList.remove('focused');
       return;
     }
     vm.focused = !vm.focused;
-    // Unfocus all others
     for (const [, v] of vms) {
       if (v !== vm) {
         v.focused = false;
@@ -301,7 +468,14 @@ function ensureVM(id) {
     panel.classList.toggle('focused', vm.focused);
   });
 
-  document.getElementById('vm-panels').appendChild(panel);
+  const vmPanels = document.getElementById('vm-panels');
+  vmPanels.appendChild(panel);
+
+  // Add bottom resize handle for this panel
+  const vResize = document.createElement('div');
+  vResize.className = 'resize-v';
+  makeDragV(vResize, () => panel);
+  vmPanels.appendChild(vResize);
   vm.el = panel;
   vms.set(id, vm);
   return vm;
@@ -315,17 +489,14 @@ function addMessage(containerId, channel, direction, type, payload, ts) {
   arr.push(entry);
   if (arr.length > 500) arr.shift();
 
-  // Apply filter
   if (filter && !matchesFilter(containerId, channel, type, payload)) return;
 
   const msgHtml = formatMessage(entry);
 
-  // Update compact view
   const compact = vm.el.querySelector(`[data-channel="${channel}"]`);
   compact.innerHTML += msgHtml;
   compact.scrollTop = compact.scrollHeight;
 
-  // Update detail view
   const detail = vm.el.querySelector(`[data-channel="${channel}-detail"]`);
   const detailHtml = formatMessageDetail(entry);
   detail.innerHTML += detailHtml;
@@ -337,7 +508,8 @@ function formatMessage(entry) {
     ? '<span class="dir-in">&gt;</span>'
     : '<span class="dir-out">&lt;</span>';
   const payloadStr = typeof entry.payload === 'object' ? JSON.stringify(entry.payload) : '';
-  return `<div class="msg">${dir} <span class="type">${entry.type}</span> <span class="payload">${escHtml(payloadStr)}</span></div>`;
+  const cls = entry.type === 'heartbeat' ? 'msg msg-heartbeat' : 'msg';
+  return `<div class="${cls}">${dir} <span class="type">${entry.type}</span> <span class="payload">${escHtml(payloadStr)}</span></div>`;
 }
 
 function formatMessageDetail(entry) {
@@ -345,7 +517,8 @@ function formatMessageDetail(entry) {
     ? '<span class="dir-in">&gt;</span>'
     : '<span class="dir-out">&lt;</span>';
   const payloadStr = typeof entry.payload === 'object' ? JSON.stringify(entry.payload, null, 2) : '';
-  return `<div class="msg"><span class="ts">${time(entry.ts)}</span> ${dir} <span class="type">${entry.type}</span><br><span class="payload">${escHtml(payloadStr)}</span></div>`;
+  const cls = entry.type === 'heartbeat' ? 'msg msg-heartbeat' : 'msg';
+  return `<div class="${cls}"><span class="ts">${time(entry.ts)}</span> ${dir} <span class="type">${entry.type}</span><br><span class="payload">${escHtml(payloadStr)}</span></div>`;
 }
 
 function matchesFilter(containerId, channel, type, payload) {
