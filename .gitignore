@@ -1,4 +1,5 @@
 node_modules/
 dist/
 *.sock
-.root/
+.agents-global/
+.claude/settings.local.json
