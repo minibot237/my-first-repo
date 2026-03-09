@@ -16,7 +16,7 @@ Dashboard at http://localhost:9100
 
 ## Architecture
 
-- **Supervisor** (`src/host/supervisor.ts`) — message router, container lifecycle, dashboard integration
+- **Supervisor** (`src/host/supervisor.ts`) — message router, container lifecycle (non-blocking pipeline), dashboard integration
 - **Agent** (`src/container/agent.ts`) — runs inside container, sends hello/heartbeats, responds to nudges
 - **Protocol** (`src/shared/protocol.ts`) — 4-byte length-prefixed JSON, ops/work channels
 - **Dashboard** (`src/host/dashboard/`) — HTTP + WebSocket server on :9100, EventEmitter bus

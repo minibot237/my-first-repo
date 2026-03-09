@@ -6,7 +6,13 @@ import { bus, type DashboardEvent, type DashboardCommand } from "./events.js";
 
 const PORT = parseInt(process.env["DASHBOARD_PORT"] || "9100", 10);
 
-export function startDashboard(): void {
+export interface StateSnapshot {
+  sessions: { id: string; type: string; messages: { role: string; content: string }[] }[];
+  pipeline: string;
+  pipelineError: string | null;
+}
+
+export function startDashboard(getSnapshot?: () => StateSnapshot): void {
   const htmlPath = path.join(import.meta.dirname, "../dashboard-ui/index.html");
 
   const server = http.createServer((_req, res) => {
@@ -38,10 +44,20 @@ export function startDashboard(): void {
   });
 
   wss.on("connection", (ws) => {
-    // Send recent history to new clients (skip session events — they're ephemeral)
+    // Send recent history to new clients (skip session events — state_sync covers those)
     for (const event of recentEvents) {
       if (event.kind.startsWith("session_")) continue;
       ws.send(JSON.stringify(event));
+    }
+
+    // Send current state snapshot so client can rebuild sessions
+    if (getSnapshot) {
+      ws.send(JSON.stringify({
+        kind: "state_sync",
+        containerId: "_sessions",
+        timestamp: new Date().toISOString(),
+        data: getSnapshot(),
+      }));
     }
 
     ws.on("message", (raw) => {

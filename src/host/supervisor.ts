@@ -93,6 +93,11 @@ bus.on("command", (cmd: DashboardCommand) => {
     return;
   }
 
+  if (cmd.action === "pipeline_start") {
+    startContainers();
+    return;
+  }
+
   if (cmd.action === "nudge") {
     // Send nudge to all containers or a specific one
     const targets = cmd.containerId === "*"
@@ -241,70 +246,100 @@ function pickRuntime(name: string): ContainerRuntime {
   }
 }
 
-// --- Main ---
+// --- Container pipeline ---
 
-async function main() {
-  // Start dashboard first
-  startDashboard();
+type PipelineState = "idle" | "building" | "starting" | "running" | "error";
+let pipelineState: PipelineState = "idle";
+let pipelineError: string | null = null;
+let activeHandle: { stop(): Promise<void> } | null = null;
 
-  const runtime = pickRuntime(RUNTIME);
-  log("using runtime", { name: runtime.name });
+function setPipeline(state: PipelineState, detail?: string) {
+  pipelineState = state;
+  pipelineError = state === "error" ? (detail ?? null) : null;
+  emitDashboard("pipeline_status", "_supervisor", { state, detail });
+  log("pipeline", { state, detail });
+}
 
-  // Build the image
-  await runtime.buildImage(IMAGE_TAG, CONTEXT_DIR);
+async function startContainers() {
+  if (pipelineState === "building" || pipelineState === "starting") {
+    log("pipeline already in progress, ignoring start request");
+    return;
+  }
 
-  // Clean up stale socket
-  if (fs.existsSync(SOCKET_PATH)) fs.unlinkSync(SOCKET_PATH);
+  // Stop existing container if restarting
+  if (activeHandle) {
+    emitDashboard("container_stop", "core", { reason: "restart" });
+    try { await activeHandle.stop(); } catch { /* may have exited */ }
+    activeHandle = null;
+  }
 
   const containerId = "core";
 
-  if (RUNTIME === "docker") {
-    const listenPromise = listenForAgent(SOCKET_PATH, containerId);
+  try {
+    const runtime = pickRuntime(RUNTIME);
+    log("using runtime", { name: runtime.name });
 
-    const handle = await runtime.start(IMAGE_TAG, {
-      rm: true,
-      publishSocket: { hostPath: SOCKET_PATH, containerPath: CONTAINER_SOCKET },
-      env: { SOCKET_PATH: CONTAINER_SOCKET, AGENT_MODE: "connect" },
-    });
+    setPipeline("building");
+    await runtime.buildImage(IMAGE_TAG, CONTEXT_DIR);
 
-    await listenPromise;
-    emitDashboard("container_start", containerId, { runtime: "docker", imageTag: IMAGE_TAG });
+    if (fs.existsSync(SOCKET_PATH)) fs.unlinkSync(SOCKET_PATH);
 
-    log("container running, dashboard active — press Ctrl+C to stop");
+    setPipeline("starting");
 
-    // Keep running until interrupted
-    await new Promise<void>((resolve) => {
-      process.on("SIGINT", async () => {
-        log("shutting down");
-        emitDashboard("container_stop", containerId, { reason: "user" });
-        try { await handle.stop(); } catch { /* may have exited */ }
-        resolve();
+    if (RUNTIME === "docker") {
+      const listenPromise = listenForAgent(SOCKET_PATH, containerId);
+
+      const handle = await runtime.start(IMAGE_TAG, {
+        rm: true,
+        publishSocket: { hostPath: SOCKET_PATH, containerPath: CONTAINER_SOCKET },
+        env: { SOCKET_PATH: CONTAINER_SOCKET, AGENT_MODE: "connect" },
       });
-    });
-  } else {
-    const handle = await runtime.start(IMAGE_TAG, {
-      publishSocket: { hostPath: SOCKET_PATH, containerPath: CONTAINER_SOCKET },
-      env: { SOCKET_PATH: CONTAINER_SOCKET },
-    });
+      activeHandle = handle;
 
-    emitDashboard("container_start", containerId, { runtime: "apple-containers", imageTag: IMAGE_TAG });
-
-    await waitForSocket(SOCKET_PATH);
-    await connectToAgent(SOCKET_PATH, containerId);
-
-    log("container running, dashboard active — press Ctrl+C to stop");
-
-    await new Promise<void>((resolve) => {
-      process.on("SIGINT", async () => {
-        log("shutting down");
-        emitDashboard("container_stop", containerId, { reason: "user" });
-        try { await handle.stop(); } catch { /* may have exited */ }
-        resolve();
+      await listenPromise;
+      emitDashboard("container_start", containerId, { runtime: "docker", imageTag: IMAGE_TAG });
+    } else {
+      const handle = await runtime.start(IMAGE_TAG, {
+        publishSocket: { hostPath: SOCKET_PATH, containerPath: CONTAINER_SOCKET },
+        env: { SOCKET_PATH: CONTAINER_SOCKET },
       });
-    });
+      activeHandle = handle;
+
+      emitDashboard("container_start", containerId, { runtime: "apple-containers", imageTag: IMAGE_TAG });
+      await waitForSocket(SOCKET_PATH);
+      await connectToAgent(SOCKET_PATH, containerId);
+    }
+
+    setPipeline("running");
+  } catch (err) {
+    setPipeline("error", (err as Error).message);
   }
+}
 
-  log("done");
+// --- Main ---
+
+async function main() {
+  // Dashboard + sessions are always available, regardless of container state
+  startDashboard(() => ({
+    ...sessionManager.snapshot(),
+    pipeline: pipelineState,
+    pipelineError,
+  }));
+
+  log("supervisor ready — dashboard at http://localhost:9100");
+
+  // Auto-start containers in background (non-blocking, non-fatal)
+  startContainers();
+
+  // Keep process alive, clean shutdown on SIGINT
+  process.on("SIGINT", async () => {
+    log("shutting down");
+    if (activeHandle) {
+      emitDashboard("container_stop", "core", { reason: "user" });
+      try { await activeHandle.stop(); } catch { /* may have exited */ }
+    }
+    process.exit(0);
+  });
 }
 
 main().catch((err) => {

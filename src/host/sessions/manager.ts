@@ -119,4 +119,14 @@ export class SessionManager {
   list(): Session[] {
     return [...this.sessions.values()].filter((s) => s.state === "active");
   }
+
+  snapshot(): { sessions: { id: string; type: SessionType; messages: { role: string; content: string }[] }[] } {
+    return {
+      sessions: this.list().map((s) => ({
+        id: s.id,
+        type: s.type,
+        messages: s.messages.map((m) => ({ role: m.role, content: m.content })),
+      })),
+    };
+  }
 }

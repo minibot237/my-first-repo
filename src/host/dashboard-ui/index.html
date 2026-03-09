@@ -36,9 +36,44 @@
     border-bottom: 1px solid #333;
     font-size: 14px;
     color: #888;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
   }
 
   #command-header span { color: #4ade80; }
+
+  #pipeline-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  #pipeline-status {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  #pipeline-status.idle { color: #555; }
+  #pipeline-status.building { color: #fbbf24; }
+  #pipeline-status.starting { color: #fbbf24; }
+  #pipeline-status.running { color: #4ade80; }
+  #pipeline-status.error { color: #ef4444; }
+
+  #pipeline-btn {
+    background: #333;
+    border: 1px solid #555;
+    color: #ccc;
+    font-family: inherit;
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  #pipeline-btn:hover { background: #444; color: #fff; }
+  #pipeline-btn:disabled { opacity: 0.4; cursor: default; }
 
   #command-log {
     flex: 1;
@@ -414,7 +449,13 @@
 <div id="app">
   <div id="command-panel">
     <div id="supervisor-console">
-      <div id="command-header"><span>minibot</span> supervisor</div>
+      <div id="command-header">
+        <div><span>minibot</span> supervisor</div>
+        <div id="pipeline-controls">
+          <span id="pipeline-status" class="idle">idle</span>
+          <button id="pipeline-btn">start</button>
+        </div>
+      </div>
       <div id="command-log"></div>
       <div id="command-input-wrap">
         <span>&gt;</span>
@@ -769,6 +810,14 @@ function handleEvent(event) {
     case 'session_error':
       handleSessionError(data);
       break;
+
+    case 'state_sync':
+      handleStateSync(data);
+      break;
+
+    case 'pipeline_status':
+      updatePipeline(data.state, data.detail);
+      break;
   }
 }
 
@@ -939,6 +988,66 @@ function handleSessionError(data) {
     if (activeSessionId === sessionId) renderChatMessages();
   }
 }
+
+function handleStateSync(data) {
+  if (!data.sessions) return;
+
+  // Rebuild sessions from server snapshot
+  sessions.clear();
+  streaming.clear();
+
+  for (const s of data.sessions) {
+    sessions.set(s.id, {
+      id: s.id,
+      type: s.type,
+      messages: s.messages.map(m => ({ role: m.role, content: m.content, ts: Date.now() })),
+    });
+  }
+
+  // Activate the last session if we had none selected, or keep current if still valid
+  if (!activeSessionId || !sessions.has(activeSessionId)) {
+    const ids = [...sessions.keys()];
+    activeSessionId = ids.length > 0 ? ids[ids.length - 1] : null;
+  }
+
+  renderChat();
+
+  // Restore pipeline state
+  if (data.pipeline) {
+    updatePipeline(data.pipeline, data.pipelineError);
+  }
+
+  if (sessions.size > 0) {
+    logCommand(`restored ${sessions.size} session(s)`, 'system');
+  }
+}
+
+// --- Pipeline controls ---
+
+function updatePipeline(state, detail) {
+  const el = document.getElementById('pipeline-status');
+  const btn = document.getElementById('pipeline-btn');
+
+  el.textContent = state === 'error' ? 'error' : state;
+  el.className = state;
+  if (detail && state === 'error') {
+    el.title = detail;
+  } else {
+    el.title = '';
+  }
+
+  const inProgress = state === 'building' || state === 'starting';
+  btn.disabled = inProgress;
+  btn.textContent = inProgress ? state + '...' : (state === 'running' ? 'restart' : 'start');
+}
+
+document.getElementById('pipeline-btn').addEventListener('click', () => {
+  ws.send(JSON.stringify({
+    action: 'pipeline_start',
+    containerId: '_supervisor',
+  }));
+  logCommand('pipeline start requested', 'system');
+});
 
 // --- Rendering ---
 
