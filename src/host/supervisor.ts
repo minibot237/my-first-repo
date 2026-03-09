@@ -10,6 +10,7 @@ import { DockerRuntime } from "./runtime/docker.js";
 import type { ContainerRuntime } from "./runtime/types.js";
 import { startDashboard } from "./dashboard/server.js";
 import { emitDashboard, bus, type DashboardCommand } from "./dashboard/events.js";
+import { SessionManager, type SessionType } from "./sessions/manager.js";
 
 const RUNTIME = process.env["RUNTIME"] || "apple-containers";
 const SOCKET_PATH = process.env["SOCKET_PATH"] || path.join(process.cwd(), "minibot.sock");
@@ -62,9 +63,35 @@ function handleMessage(sock: net.Socket, msg: Message, containerId: string) {
   }
 }
 
+// --- Session manager ---
+const sessionManager = new SessionManager();
+
 // --- Handle dashboard commands ---
 bus.on("command", (cmd: DashboardCommand) => {
   log("dashboard command", { action: cmd.action, containerId: cmd.containerId });
+
+  if (cmd.action === "session_create") {
+    const { type } = cmd.data as { type: SessionType };
+    const session = sessionManager.create(type);
+    log("session created", { sessionId: session.id, type });
+    return;
+  }
+
+  if (cmd.action === "session_send") {
+    const { sessionId, content } = cmd.data as { sessionId: string; content: string };
+    log("session send", { sessionId, contentLength: content.length });
+    sessionManager.send(sessionId, content).catch((err) => {
+      log("session send error", { sessionId, error: (err as Error).message });
+    });
+    return;
+  }
+
+  if (cmd.action === "session_close") {
+    const { sessionId } = cmd.data as { sessionId: string };
+    sessionManager.close(sessionId);
+    log("session closed", { sessionId });
+    return;
+  }
 
   if (cmd.action === "nudge") {
     // Send nudge to all containers or a specific one

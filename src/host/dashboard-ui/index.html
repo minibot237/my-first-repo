@@ -264,18 +264,172 @@
   body.resizing-v { cursor: row-resize; }
   body.resizing *, body.resizing-v * { user-select: none !important; pointer-events: none !important; }
   body.resizing .resize-h, body.resizing-v .resize-v { pointer-events: auto !important; }
+
+  /* --- Supervisor Console (top of left panel) --- */
+  #supervisor-console {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 120px;
+    overflow: hidden;
+  }
+
+  /* --- Chat Panel (bottom of left panel) --- */
+  #chat-panel {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 100px;
+    overflow: hidden;
+  }
+
+  #chat-tabs {
+    display: flex;
+    align-items: center;
+    border-bottom: 1px solid #333;
+    padding: 0 8px;
+    flex-shrink: 0;
+    overflow-x: auto;
+  }
+
+  .chat-tab {
+    padding: 7px 14px;
+    font-size: 13px;
+    color: #666;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+  }
+
+  .chat-tab:hover { color: #aaa; }
+
+  .chat-tab.active {
+    color: #c4b5fd;
+    border-bottom-color: #c4b5fd;
+  }
+
+  .chat-tab-close {
+    margin-left: 6px;
+    color: #555;
+    font-size: 11px;
+  }
+
+  .chat-tab-close:hover { color: #ef4444; }
+
+  #chat-tab-add {
+    padding: 7px 10px;
+    font-size: 15px;
+    color: #555;
+    cursor: pointer;
+  }
+
+  #chat-tab-add:hover { color: #4ade80; }
+
+  #chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 12px;
+    min-height: 0;
+  }
+
+  .chat-msg {
+    margin-bottom: 10px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .chat-msg-role {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 2px;
+  }
+
+  .chat-msg.user .chat-msg-role { color: #4ade80; }
+  .chat-msg.assistant .chat-msg-role { color: #c4b5fd; }
+
+  .chat-msg-content {
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #ccc;
+  }
+
+  #chat-input-wrap {
+    border-top: 1px solid #333;
+    padding: 8px 12px;
+    flex-shrink: 0;
+  }
+
+  #chat-input {
+    width: 100%;
+    background: #16162a;
+    border: 1px solid #333;
+    border-radius: 4px;
+    color: #e0e0e0;
+    font-family: inherit;
+    font-size: 14px;
+    padding: 8px 10px;
+    outline: none;
+    resize: none;
+    min-height: 38px;
+    max-height: 120px;
+  }
+
+  #chat-input:focus { border-color: #555; }
+
+  #chat-empty {
+    padding: 24px 16px;
+    text-align: center;
+    color: #555;
+    font-size: 13px;
+  }
+
+  /* Session type picker */
+  .session-picker {
+    position: fixed;
+    background: #252540;
+    border: 1px solid #444;
+    border-radius: 6px;
+    padding: 4px 0;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  }
+
+  .session-picker-option {
+    padding: 8px 16px;
+    font-size: 13px;
+    color: #ccc;
+    cursor: pointer;
+  }
+
+  .session-picker-option:hover {
+    background: #333;
+    color: #fff;
+  }
 </style>
 </head>
 <body>
 <div id="app">
   <div id="command-panel">
-    <div id="command-header"><span>minibot</span> supervisor</div>
-    <div id="command-log"></div>
-    <div id="command-input-wrap">
-      <span>&gt;</span>
-      <input id="command-input" type="text" placeholder="nudge, filter, status, clear" autofocus>
+    <div id="supervisor-console">
+      <div id="command-header"><span>minibot</span> supervisor</div>
+      <div id="command-log"></div>
+      <div id="command-input-wrap">
+        <span>&gt;</span>
+        <input id="command-input" type="text" placeholder="nudge, filter, status, clear" autofocus>
+      </div>
+      <div id="connection-status" class="disconnected">disconnected</div>
     </div>
-    <div id="connection-status" class="disconnected">disconnected</div>
+    <div class="resize-v" id="left-panel-resize"></div>
+    <div id="chat-panel">
+      <div id="chat-tabs">
+        <div id="chat-tab-add">+</div>
+      </div>
+      <div id="chat-messages"></div>
+      <div id="chat-input-wrap">
+        <textarea id="chat-input" rows="1" placeholder="Send a message... (Enter to send, Shift+Enter for newline)"></textarea>
+      </div>
+    </div>
   </div>
   <div class="resize-h" id="main-resize"></div>
   <div id="vm-panels">
@@ -592,6 +746,27 @@ function handleEvent(event) {
     case 'error':
       logCommand(`error [${containerId}]: ${data.message}`, 'error');
       break;
+
+    // --- Session events ---
+    case 'session_created':
+      handleSessionCreated(data);
+      break;
+
+    case 'session_message':
+      handleSessionMessage(data);
+      break;
+
+    case 'session_chunk':
+      handleSessionChunk(data);
+      break;
+
+    case 'session_closed':
+      handleSessionClosed(data);
+      break;
+
+    case 'session_error':
+      handleSessionError(data);
+      break;
   }
 }
 
@@ -646,6 +821,234 @@ document.getElementById('command-input').addEventListener('keydown', (e) => {
       logCommand('commands: nudge [id|*], filter [text], status, clear', 'system');
   }
 });
+
+// --- Chat Sessions ---
+
+const sessions = new Map();
+let activeSessionId = null;
+// Track in-flight streaming: sessionId → true while assistant is streaming
+const streaming = new Set();
+
+function requestCreateSession(type) {
+  ws.send(JSON.stringify({
+    action: 'session_create',
+    containerId: '_sessions',
+    data: { type },
+  }));
+}
+
+function requestCloseSession(sessionId) {
+  ws.send(JSON.stringify({
+    action: 'session_close',
+    containerId: '_sessions',
+    data: { sessionId },
+  }));
+}
+
+function requestSendMessage(sessionId, content) {
+  ws.send(JSON.stringify({
+    action: 'session_send',
+    containerId: '_sessions',
+    data: { sessionId, content },
+  }));
+}
+
+// --- Session event handlers (called from handleEvent) ---
+
+function handleSessionCreated(data) {
+  const { sessionId, type } = data;
+  sessions.set(sessionId, { id: sessionId, type, messages: [] });
+  activeSessionId = sessionId;
+  renderChat();
+  logCommand(`session created: ${sessionId} (${type})`, 'success');
+}
+
+function handleSessionMessage(data) {
+  const { sessionId, role, content } = data;
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  if (role === 'user') {
+    // User messages are added locally on send, so skip duplicates
+    return;
+  }
+
+  // For assistant: this is the final complete message after streaming ends
+  // Replace the streaming placeholder with the final content
+  streaming.delete(sessionId);
+  const last = session.messages[session.messages.length - 1];
+  if (last && last.role === 'assistant' && last.streaming) {
+    last.content = content;
+    last.streaming = false;
+  }
+  if (activeSessionId === sessionId) renderChatMessages();
+}
+
+function handleSessionChunk(data) {
+  const { sessionId, delta } = data;
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  if (!streaming.has(sessionId)) {
+    // First chunk — create a new assistant message
+    streaming.add(sessionId);
+    session.messages.push({ role: 'assistant', content: '', streaming: true, ts: Date.now() });
+  }
+
+  // Append delta to the last assistant message
+  const last = session.messages[session.messages.length - 1];
+  if (last && last.role === 'assistant') {
+    last.content += delta;
+  }
+
+  if (activeSessionId === sessionId) {
+    // Incremental DOM update — just update the last message content
+    const container = document.getElementById('chat-messages');
+    let msgEl = container.querySelector('.chat-msg:last-child .chat-msg-content');
+    if (msgEl) {
+      msgEl.textContent = last.content;
+      container.scrollTop = container.scrollHeight;
+    } else {
+      renderChatMessages();
+    }
+  }
+}
+
+function handleSessionClosed(data) {
+  const { sessionId } = data;
+  sessions.delete(sessionId);
+  streaming.delete(sessionId);
+  if (activeSessionId === sessionId) {
+    const remaining = [...sessions.keys()];
+    activeSessionId = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+  }
+  renderChat();
+  logCommand(`session closed: ${sessionId}`, 'system');
+}
+
+function handleSessionError(data) {
+  const { sessionId, error } = data;
+  streaming.delete(sessionId);
+  logCommand(`session error [${sessionId}]: ${error}`, 'error');
+  // Show error inline in chat
+  const session = sessions.get(sessionId);
+  if (session) {
+    session.messages.push({ role: 'assistant', content: `[error: ${error}]`, ts: Date.now() });
+    if (activeSessionId === sessionId) renderChatMessages();
+  }
+}
+
+// --- Rendering ---
+
+function renderChat() {
+  renderChatTabs();
+  renderChatMessages();
+}
+
+function renderChatTabs() {
+  const tabBar = document.getElementById('chat-tabs');
+  tabBar.querySelectorAll('.chat-tab').forEach(t => t.remove());
+
+  const addBtn = document.getElementById('chat-tab-add');
+  for (const [id, session] of sessions) {
+    const tab = document.createElement('div');
+    tab.className = 'chat-tab' + (id === activeSessionId ? ' active' : '');
+    tab.dataset.session = id;
+    tab.innerHTML = `${escHtml(session.type)}<span class="chat-tab-close" data-close="${id}">&times;</span>`;
+    tab.addEventListener('click', (e) => {
+      if (e.target.dataset.close) {
+        requestCloseSession(e.target.dataset.close);
+        return;
+      }
+      activeSessionId = id;
+      renderChat();
+    });
+    tabBar.insertBefore(tab, addBtn);
+  }
+}
+
+function renderChatMessages() {
+  const container = document.getElementById('chat-messages');
+
+  if (!activeSessionId || !sessions.has(activeSessionId)) {
+    container.innerHTML = '<div id="chat-empty">No active sessions. Click <strong>+</strong> to start one.</div>';
+    return;
+  }
+
+  const session = sessions.get(activeSessionId);
+  container.innerHTML = session.messages.map(msg =>
+    `<div class="chat-msg ${msg.role}"><div class="chat-msg-role">${msg.role}</div><div class="chat-msg-content">${escHtml(msg.content)}</div></div>`
+  ).join('');
+  container.scrollTop = container.scrollHeight;
+}
+
+// Session type picker
+function showSessionPicker(anchorEl) {
+  document.querySelector('.session-picker')?.remove();
+
+  const picker = document.createElement('div');
+  picker.className = 'session-picker';
+  const rect = anchorEl.getBoundingClientRect();
+  picker.style.left = rect.left + 'px';
+  picker.style.top = (rect.bottom + 4) + 'px';
+
+  ['coder', 'core', 'canary'].forEach(type => {
+    const opt = document.createElement('div');
+    opt.className = 'session-picker-option';
+    opt.textContent = type;
+    opt.addEventListener('click', () => {
+      requestCreateSession(type);
+      picker.remove();
+    });
+    picker.appendChild(opt);
+  });
+
+  document.body.appendChild(picker);
+
+  setTimeout(() => {
+    document.addEventListener('click', function handler(e) {
+      if (!picker.contains(e.target)) {
+        picker.remove();
+        document.removeEventListener('click', handler);
+      }
+    });
+  }, 0);
+}
+
+document.getElementById('chat-tab-add').addEventListener('click', (e) => {
+  e.stopPropagation();
+  showSessionPicker(e.target);
+});
+
+// Chat input
+document.getElementById('chat-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    const input = e.target;
+    const text = input.value.trim();
+    if (!text || !activeSessionId) return;
+    input.value = '';
+
+    // Add user message locally for immediate feedback
+    const session = sessions.get(activeSessionId);
+    if (session) {
+      session.messages.push({ role: 'user', content: text, ts: Date.now() });
+      renderChatMessages();
+    }
+
+    // Send to server
+    requestSendMessage(activeSessionId, text);
+  }
+});
+
+// Wire up left panel vertical resize
+makeDragV(
+  document.getElementById('left-panel-resize'),
+  () => document.getElementById('supervisor-console')
+);
+
+// Initial render (empty state)
+renderChat();
 
 connect();
 </script>

@@ -1,14 +1,15 @@
 import { EventEmitter } from "node:events";
 
 export interface DashboardEvent {
-  kind: "container_start" | "container_stop" | "ops" | "work_in" | "work_out" | "error";
+  kind: "container_start" | "container_stop" | "ops" | "work_in" | "work_out" | "error"
+    | "session_created" | "session_message" | "session_chunk" | "session_closed" | "session_error";
   containerId: string;
   timestamp: string;
   data: unknown;
 }
 
 export interface DashboardCommand {
-  action: "nudge" | "stop";
+  action: "nudge" | "stop" | "session_create" | "session_send" | "session_close";
   containerId: string;
   data?: unknown;
 }
