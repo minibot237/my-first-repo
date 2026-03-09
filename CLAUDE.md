@@ -22,6 +22,14 @@ Dashboard at http://localhost:9100
 - **Dashboard** (`src/host/dashboard/`) — HTTP + WebSocket server on :9100, EventEmitter bus
 - **Dashboard UI** (`src/host/dashboard-ui/index.html`) — single HTML file, no bundler, no framework
 - **Runtimes** (`src/host/runtime/`) — Apple Containers and Docker behind `ContainerRuntime` interface
+- **LM Studio** (host, :1234) — local LLM inference server, supervisor proxies all model access
+
+## Models (via LM Studio)
+
+- **CORE** — Qwen 3.5 9B (Q4_K_M, ~5-6GB). Routing and decision-making for the primary agent loop.
+- **Canary** — Qwen 2.5 3B (Q4_K_M, ~2.4GB). Injection detection in the safety/honeypot VM. Tight prompt, flag-anything-weird mode.
+
+Both models run on the host via LM Studio. Containers have no direct model access — all inference requests flow through the supervisor, which proxies to LM Studio and logs everything.
 
 ## Git
 
@@ -39,6 +47,6 @@ You can commit and push to main freely — no need to ask first. Keep commits sm
 
 ## Detailed Docs
 
-- `docs/supervisor-dashboard.md` — full dashboard design, future architecture vision, safety VM concept
+- `docs/supervisor-dashboard.md` — full dashboard design, future architecture vision, Canary VM concept
 - `docs/progress-2026-03-08.md` — build log with technical details
 - `docs/container-runtimes.md` — runtime-specific notes (Apple Containers vs Docker)
