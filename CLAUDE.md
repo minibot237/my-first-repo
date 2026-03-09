@@ -23,6 +23,10 @@ Dashboard at http://localhost:9100
 - **Dashboard UI** (`src/host/dashboard-ui/index.html`) — single HTML file, no bundler, no framework
 - **Runtimes** (`src/host/runtime/`) — Apple Containers and Docker behind `ContainerRuntime` interface
 
+## Git
+
+You can commit and push to main freely — no need to ask first. Keep commits small and descriptive.
+
 ## Key Conventions
 
 - Single HTML file for the dashboard — all CSS and JS inline, no build tools
