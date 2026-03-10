@@ -12,6 +12,8 @@ import { startDashboard } from "./dashboard/server.js";
 import { emitDashboard, bus, type DashboardCommand } from "./dashboard/events.js";
 import { SessionManager, type SessionType } from "./sessions/manager.js";
 import { evaluateContent } from "./canary/evaluate.js";
+import { TrustStore } from "./trust/store.js";
+import type { TrustComponentType } from "./trust/types.js";
 import { log as _log, localTimestamp } from "./log.js";
 
 const RUNTIME = process.env["RUNTIME"] || "apple-containers";
@@ -68,6 +70,9 @@ function handleMessage(sock: net.Socket, msg: Message, containerId: string) {
 
 // --- Session manager ---
 const sessionManager = new SessionManager();
+
+// --- Trust store ---
+const trustStore = new TrustStore();
 
 // --- Handle dashboard commands ---
 bus.on("command", async (cmd: DashboardCommand) => {
@@ -188,6 +193,19 @@ bus.on("command", async (cmd: DashboardCommand) => {
       fs.appendFileSync(CANARY_LOG_PATH, JSON.stringify(errorEntry) + "\n");
       fs.appendFileSync(CANARY_THREATS_PATH, JSON.stringify(errorEntry) + "\n");
     });
+    return;
+  }
+
+  if (cmd.action === "trust_query") {
+    emitDashboard("trust_update", "_trust", trustStore.snapshot());
+    return;
+  }
+
+  if (cmd.action === "trust_override") {
+    const { sourceId, componentType, fitValue, reason } = cmd.data as {
+      sourceId: string; componentType: TrustComponentType; fitValue: number; reason: string;
+    };
+    trustStore.override(sourceId, componentType, fitValue, reason);
     return;
   }
 
@@ -432,6 +450,7 @@ async function main() {
     ...sessionManager.snapshot(),
     pipeline: pipelineState,
     pipelineError,
+    trust: trustStore.snapshot(),
   }));
 
   log("supervisor ready — dashboard at http://localhost:9100");

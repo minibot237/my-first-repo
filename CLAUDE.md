@@ -26,6 +26,7 @@ Dashboard at http://localhost:9100
 - **Sessions** (`src/host/sessions/`) — persistent multi-turn chat sessions (coder/core/canary types)
 - **Ingest** (`src/host/ingest/`) — content ingestion pipelines (email, web) producing structured JSON envelopes
 - **Canary** (`src/host/canary/`) — content safety evaluation: code tools → LLM classification pipeline
+- **Trust** (`src/host/trust/`) — persistent fit_value store for source trustworthiness, file-backed in `data/`
 
 ## Models (via Ollama)
 
@@ -52,7 +53,6 @@ You can commit and push to main freely — no need to ask first. Keep commits sm
 ## Detailed Docs
 
 - `docs/content-vocabulary.md` — JSON vocabulary for content ingestion, canary tool contracts, trust store integration
-- `docs/TRUST.md` — fit_value system specification (from research project, reference material)
 - `docs/email-ingest-findings.md` — batch run findings from 1521 real emails
 - `docs/supervisor-dashboard.md` — full dashboard design, future architecture vision, Canary VM concept
 - `docs/chat-sessions.md` — session abstraction, types vs backends, lifecycle, dashboard integration

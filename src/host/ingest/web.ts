@@ -25,10 +25,13 @@ const DEFAULT_FIT = 0.5;
 const MAX_REDIRECTS = 10;
 const TIMEOUT_MS = 15_000;
 
+/** Optional trust lookup — returns sourceFit for a sourceId */
+export type FitLookup = (sourceId: string) => number;
+
 // --- Public API ---
 
 /** Fetch a URL and produce a ContentEnvelope */
-export async function ingestWeb(url: string): Promise<ContentEnvelope> {
+export async function ingestWeb(url: string, lookupFit?: FitLookup): Promise<ContentEnvelope> {
   const { body, finalUrl, redirectChain, tls } = await fetchWithTracking(url);
 
   const $ = cheerioLoad(body);
@@ -54,7 +57,7 @@ export async function ingestWeb(url: string): Promise<ContentEnvelope> {
     id: randomUUID(),
     source: "web",
     sourceId: domain,
-    sourceFit: DEFAULT_FIT,     // TODO: trust store lookup
+    sourceFit: lookupFit ? lookupFit(domain) : DEFAULT_FIT,
     type: classifyContentType(parts),
     ingestedAt: localTimestamp(),
     content,

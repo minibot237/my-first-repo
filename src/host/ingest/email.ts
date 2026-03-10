@@ -27,10 +27,13 @@ import type {
 
 const DEFAULT_FIT = 0.5;
 
+/** Optional trust lookup — returns sourceFit for a sourceId */
+export type FitLookup = (sourceId: string) => number;
+
 // --- Public API ---
 
 /** Parse a raw .eml file into a ContentEnvelope */
-export async function ingestEmail(emlPath: string): Promise<ContentEnvelope> {
+export async function ingestEmail(emlPath: string, lookupFit?: FitLookup): Promise<ContentEnvelope> {
   const raw = await readFile(emlPath);
   const parsed = await simpleParser(raw);
 
@@ -52,7 +55,7 @@ export async function ingestEmail(emlPath: string): Promise<ContentEnvelope> {
     id: randomUUID(),
     source: "email",
     sourceId: envelope.from.address,
-    sourceFit: DEFAULT_FIT,     // TODO: trust store lookup
+    sourceFit: lookupFit ? lookupFit(envelope.from.address) : DEFAULT_FIT,
     type: classifyContentType(parts),
     ingestedAt: localTimestamp(),
     content,
@@ -60,7 +63,7 @@ export async function ingestEmail(emlPath: string): Promise<ContentEnvelope> {
 }
 
 /** Parse from a raw email buffer (for non-file sources) */
-export async function ingestEmailBuffer(buffer: Buffer): Promise<ContentEnvelope> {
+export async function ingestEmailBuffer(buffer: Buffer, lookupFit?: FitLookup): Promise<ContentEnvelope> {
   const parsed = await simpleParser(buffer);
 
   const envelope = extractEnvelope(parsed);
@@ -81,7 +84,7 @@ export async function ingestEmailBuffer(buffer: Buffer): Promise<ContentEnvelope
     id: randomUUID(),
     source: "email",
     sourceId: envelope.from.address,
-    sourceFit: DEFAULT_FIT,
+    sourceFit: lookupFit ? lookupFit(envelope.from.address) : DEFAULT_FIT,
     type: classifyContentType(parts),
     ingestedAt: localTimestamp(),
     content,

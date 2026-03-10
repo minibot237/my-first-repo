@@ -5,14 +5,15 @@ export interface DashboardEvent {
   kind: "container_start" | "container_stop" | "ops" | "work_in" | "work_out" | "error"
     | "session_created" | "session_message" | "session_chunk" | "session_closed" | "session_error"
     | "state_sync" | "pipeline_status"
-    | "canary_result";
+    | "canary_result"
+    | "trust_update";
   containerId: string;
   timestamp: string;
   data: unknown;
 }
 
 export interface DashboardCommand {
-  action: "nudge" | "stop" | "session_create" | "session_send" | "session_close" | "session_clear_all" | "pipeline_start" | "supervisor_restart" | "clear_logs" | "canary_evaluate";
+  action: "nudge" | "stop" | "session_create" | "session_send" | "session_close" | "session_clear_all" | "pipeline_start" | "supervisor_restart" | "clear_logs" | "canary_evaluate" | "trust_query" | "trust_override";
   containerId: string;
   data?: unknown;
 }

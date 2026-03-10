@@ -4,6 +4,7 @@ import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import { bus, type DashboardEvent, type DashboardCommand } from "./events.js";
 import { localTimestamp } from "../log.js";
+import type { TrustSnapshot } from "../trust/types.js";
 
 const PORT = parseInt(process.env["DASHBOARD_PORT"] || "9100", 10);
 
@@ -11,6 +12,7 @@ export interface StateSnapshot {
   sessions: { id: string; type: string; messages: { role: string; content: string }[] }[];
   pipeline: string;
   pipelineError: string | null;
+  trust: TrustSnapshot;
 }
 
 export function startDashboard(getSnapshot?: () => StateSnapshot): void {
