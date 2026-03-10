@@ -4,3 +4,4 @@ dist/
 .agents-global/
 .claude/settings.local.json
 logs/
+.DS_Store
