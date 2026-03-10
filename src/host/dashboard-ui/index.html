@@ -61,7 +61,7 @@
   #pipeline-status.running { color: #4ade80; }
   #pipeline-status.error { color: #ef4444; }
 
-  #pipeline-btn {
+  #supervisor-menu-btn {
     background: #333;
     border: 1px solid #555;
     color: #ccc;
@@ -72,8 +72,116 @@
     cursor: pointer;
   }
 
-  #pipeline-btn:hover { background: #444; color: #fff; }
-  #pipeline-btn:disabled { opacity: 0.4; cursor: default; }
+  #supervisor-menu-btn:hover { background: #444; color: #fff; }
+
+  .supervisor-menu {
+    position: absolute;
+    right: 8px;
+    top: 32px;
+    background: #252540;
+    border: 1px solid #444;
+    border-radius: 6px;
+    padding: 4px 0;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    min-width: 160px;
+  }
+
+  .supervisor-menu-item {
+    padding: 8px 16px;
+    font-size: 13px;
+    color: #ccc;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .supervisor-menu-item:hover { background: #333; color: #fff; }
+  .supervisor-menu-item.danger { color: #ef4444; }
+  .supervisor-menu-item.danger:hover { background: #3a1a1a; }
+  .supervisor-menu-sep { border-top: 1px solid #333; margin: 4px 0; }
+
+  /* --- Thread list --- */
+  #thread-list {
+    border-bottom: 1px solid #333;
+    font-size: 12px;
+    max-height: 140px;
+    overflow-y: auto;
+  }
+
+  #thread-list:empty { display: none; }
+
+  .thread-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 16px;
+  }
+
+  .thread-row:hover { background: #252540; }
+
+  .thread-light {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .thread-light.idle { background: #4ade80; }
+  .thread-light.working { background: #fbbf24; }
+  .thread-light.error { background: #ef4444; }
+
+  .thread-model {
+    color: #c4b5fd;
+    min-width: 48px;
+  }
+
+  .thread-owner {
+    color: #666;
+    min-width: 36px;
+  }
+
+  .thread-speed {
+    color: #555;
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .thread-speed.active { color: #fbbf24; }
+
+  .thread-menu-btn {
+    color: #555;
+    cursor: pointer;
+    font-size: 10px;
+    padding: 0 4px;
+    margin-left: 4px;
+    visibility: hidden;
+  }
+
+  .thread-row:hover .thread-menu-btn { visibility: visible; }
+  .thread-menu-btn:hover { color: #ccc; }
+
+  .thread-menu {
+    position: absolute;
+    background: #252540;
+    border: 1px solid #444;
+    border-radius: 6px;
+    padding: 4px 0;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    min-width: 140px;
+  }
+
+  .thread-menu-item {
+    padding: 6px 14px;
+    font-size: 12px;
+    color: #ccc;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .thread-menu-item:hover { background: #333; color: #fff; }
+  .thread-menu-item.danger { color: #ef4444; }
+  .thread-menu-item.danger:hover { background: #3a1a1a; }
 
   #command-log {
     flex: 1;
@@ -345,6 +453,19 @@
     border-bottom-color: #c4b5fd;
   }
 
+  .chat-tab-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+
+  .chat-tab-dot.idle { background: #4ade80; }
+  .chat-tab-dot.working { background: #fbbf24; }
+  .chat-tab-dot.error { background: #ef4444; }
+
   .chat-tab-close {
     margin-left: 6px;
     color: #555;
@@ -352,6 +473,20 @@
   }
 
   .chat-tab-close:hover { color: #ef4444; }
+
+  .chat-thinking {
+    padding: 8px 0;
+    font-size: 13px;
+    color: #888;
+    font-style: italic;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+  }
+
+  .chat-thinking { animation: pulse 1.5s ease-in-out infinite; }
 
   #chat-tab-add {
     padding: 7px 10px;
@@ -453,9 +588,10 @@
         <div><span>minibot</span> supervisor</div>
         <div id="pipeline-controls">
           <span id="pipeline-status" class="idle">idle</span>
-          <button id="pipeline-btn">start</button>
+          <button id="supervisor-menu-btn">&#9662;</button>
         </div>
       </div>
+      <div id="thread-list"></div>
       <div id="command-log"></div>
       <div id="command-input-wrap">
         <span>&gt;</span>
@@ -879,6 +1015,99 @@ const sessions = new Map();
 let activeSessionId = null;
 // Track in-flight streaming: sessionId → true while assistant is streaming
 const streaming = new Set();
+// Track pending: sessionId → true while waiting for first chunk (model thinking)
+const pending = new Set();
+// Streaming stats: sessionId → { startTime, chars, lastChunkTime }
+const streamStats = new Map();
+
+// --- Thread list ---
+
+function renderThreadList() {
+  const el = document.getElementById('thread-list');
+  if (sessions.size === 0) { el.innerHTML = ''; return; }
+
+  el.innerHTML = [...sessions.values()].map(s => {
+    const isPending = pending.has(s.id);
+    const isStreaming = streaming.has(s.id);
+    const hasError = s.messages.length > 0 && s.messages[s.messages.length - 1].content?.startsWith?.('[error:');
+    const lightCls = hasError ? 'error' : ((isPending || isStreaming) ? 'working' : 'idle');
+    const stats = streamStats.get(s.id);
+    let speedText = '';
+    if (isPending) {
+      speedText = 'thinking...';
+    } else if (isStreaming && stats && stats.chars > 0) {
+      const elapsed = (Date.now() - stats.startTime) / 1000;
+      if (elapsed > 0.2) {
+        const tps = ((stats.chars / 4) / elapsed).toFixed(1);
+        speedText = tps + ' t/s';
+      }
+    }
+    const src = s.backend?.source || s.type;
+    const model = s.backend?.model || '';
+    const label = `${src} ${s.type}` + (model && model !== src ? ` (${model})` : '');
+    const isActive = isPending || isStreaming;
+    return `<div class="thread-row" data-thread="${s.id}">` +
+      `<div class="thread-light ${lightCls}"></div>` +
+      `<span class="thread-model">${escHtml(label)}</span>` +
+      `<span class="thread-owner">chat</span>` +
+      `<span class="thread-speed${isActive ? ' active' : ''}">${speedText}</span>` +
+      `<span class="thread-menu-btn" data-thread-menu="${s.id}">&#9662;</span>` +
+      `</div>`;
+  }).join('');
+
+  // Wire up thread menu buttons
+  el.querySelectorAll('.thread-menu-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showThreadMenu(btn, btn.dataset.threadMenu);
+    });
+  });
+}
+
+function showThreadMenu(anchorEl, sessionId) {
+  document.querySelector('.thread-menu')?.remove();
+
+  const menu = document.createElement('div');
+  menu.className = 'thread-menu';
+
+  const items = [
+    { label: 'Close session', action: () => requestCloseSession(sessionId) },
+  ];
+
+  for (const item of items) {
+    const opt = document.createElement('div');
+    opt.className = 'thread-menu-item' + (item.danger ? ' danger' : '');
+    opt.textContent = item.label;
+    opt.addEventListener('click', () => {
+      item.action();
+      menu.remove();
+    });
+    menu.appendChild(opt);
+  }
+
+  const rect = anchorEl.getBoundingClientRect();
+  menu.style.left = rect.left + 'px';
+  menu.style.top = (rect.bottom + 2) + 'px';
+  menu.style.position = 'fixed';
+  document.body.appendChild(menu);
+
+  setTimeout(() => {
+    document.addEventListener('click', function handler(e) {
+      if (!menu.contains(e.target)) {
+        menu.remove();
+        document.removeEventListener('click', handler);
+      }
+    });
+  }, 0);
+}
+
+// Refresh speed display while streaming or pending
+setInterval(() => {
+  if (streaming.size > 0 || pending.size > 0) {
+    renderThreadList();
+    renderChatTabs();
+  }
+}, 250);
 
 function requestCreateSession(type) {
   ws.send(JSON.stringify({
@@ -907,11 +1136,15 @@ function requestSendMessage(sessionId, content) {
 // --- Session event handlers (called from handleEvent) ---
 
 function handleSessionCreated(data) {
-  const { sessionId, type } = data;
-  sessions.set(sessionId, { id: sessionId, type, messages: [] });
+  const { sessionId, type, backend } = data;
+  sessions.set(sessionId, { id: sessionId, type, backend: backend || null, messages: [] });
   activeSessionId = sessionId;
   renderChat();
-  logCommand(`session created: ${sessionId} (${type})`, 'success');
+  renderThreadList();
+  const src = backend?.source || type;
+  const model = backend?.model || '';
+  const label = `${src} ${type}` + (model && model !== src ? ` (${model})` : '');
+  logCommand(`session created: ${label}`, 'success');
 }
 
 function handleSessionMessage(data) {
@@ -925,14 +1158,17 @@ function handleSessionMessage(data) {
   }
 
   // For assistant: this is the final complete message after streaming ends
-  // Replace the streaming placeholder with the final content
+  pending.delete(sessionId);
   streaming.delete(sessionId);
+  streamStats.delete(sessionId);
   const last = session.messages[session.messages.length - 1];
   if (last && last.role === 'assistant' && last.streaming) {
     last.content = content;
     last.streaming = false;
   }
+  renderChatTabs();
   if (activeSessionId === sessionId) renderChatMessages();
+  renderThreadList();
 }
 
 function handleSessionChunk(data) {
@@ -941,8 +1177,10 @@ function handleSessionChunk(data) {
   if (!session) return;
 
   if (!streaming.has(sessionId)) {
-    // First chunk — create a new assistant message
+    // First chunk — transition from pending to streaming
+    pending.delete(sessionId);
     streaming.add(sessionId);
+    streamStats.set(sessionId, { startTime: Date.now(), chars: 0 });
     session.messages.push({ role: 'assistant', content: '', streaming: true, ts: Date.now() });
   }
 
@@ -951,6 +1189,10 @@ function handleSessionChunk(data) {
   if (last && last.role === 'assistant') {
     last.content += delta;
   }
+
+  // Update streaming stats
+  const stats = streamStats.get(sessionId);
+  if (stats) stats.chars += delta.length;
 
   if (activeSessionId === sessionId) {
     // Incremental DOM update — just update the last message content
@@ -968,18 +1210,23 @@ function handleSessionChunk(data) {
 function handleSessionClosed(data) {
   const { sessionId } = data;
   sessions.delete(sessionId);
+  pending.delete(sessionId);
   streaming.delete(sessionId);
+  streamStats.delete(sessionId);
   if (activeSessionId === sessionId) {
     const remaining = [...sessions.keys()];
     activeSessionId = remaining.length > 0 ? remaining[remaining.length - 1] : null;
   }
   renderChat();
+  renderThreadList();
   logCommand(`session closed: ${sessionId}`, 'system');
 }
 
 function handleSessionError(data) {
   const { sessionId, error } = data;
+  pending.delete(sessionId);
   streaming.delete(sessionId);
+  streamStats.delete(sessionId);
   logCommand(`session error [${sessionId}]: ${error}`, 'error');
   // Show error inline in chat
   const session = sessions.get(sessionId);
@@ -987,6 +1234,8 @@ function handleSessionError(data) {
     session.messages.push({ role: 'assistant', content: `[error: ${error}]`, ts: Date.now() });
     if (activeSessionId === sessionId) renderChatMessages();
   }
+  renderChatTabs();
+  renderThreadList();
 }
 
 function handleStateSync(data) {
@@ -994,12 +1243,15 @@ function handleStateSync(data) {
 
   // Rebuild sessions from server snapshot
   sessions.clear();
+  pending.clear();
   streaming.clear();
+  streamStats.clear();
 
   for (const s of data.sessions) {
     sessions.set(s.id, {
       id: s.id,
       type: s.type,
+      backend: s.backend || null,
       messages: s.messages.map(m => ({ role: m.role, content: m.content, ts: Date.now() })),
     });
   }
@@ -1011,6 +1263,7 @@ function handleStateSync(data) {
   }
 
   renderChat();
+  renderThreadList();
 
   // Restore pipeline state
   if (data.pipeline) {
@@ -1024,9 +1277,11 @@ function handleStateSync(data) {
 
 // --- Pipeline controls ---
 
+let currentPipelineState = 'idle';
+
 function updatePipeline(state, detail) {
+  currentPipelineState = state;
   const el = document.getElementById('pipeline-status');
-  const btn = document.getElementById('pipeline-btn');
 
   el.textContent = state === 'error' ? 'error' : state;
   el.className = state;
@@ -1035,18 +1290,70 @@ function updatePipeline(state, detail) {
   } else {
     el.title = '';
   }
-
-  const inProgress = state === 'building' || state === 'starting';
-  btn.disabled = inProgress;
-  btn.textContent = inProgress ? state + '...' : (state === 'running' ? 'restart' : 'start');
 }
 
-document.getElementById('pipeline-btn').addEventListener('click', () => {
-  ws.send(JSON.stringify({
-    action: 'pipeline_start',
-    containerId: '_supervisor',
-  }));
-  logCommand('pipeline start requested', 'system');
+// --- Supervisor menu ---
+
+function showSupervisorMenu(anchorEl) {
+  document.querySelector('.supervisor-menu')?.remove();
+
+  const menu = document.createElement('div');
+  menu.className = 'supervisor-menu';
+
+  const pipelineInProgress = currentPipelineState === 'building' || currentPipelineState === 'starting';
+  const pipelineLabel = pipelineInProgress
+    ? currentPipelineState + '...'
+    : (currentPipelineState === 'running' ? 'Restart containers' : 'Start containers');
+
+  const items = [
+    { label: pipelineLabel, action: 'pipeline_start', disabled: pipelineInProgress },
+    { label: 'Clear all sessions', action: 'session_clear_all' },
+    { label: 'Clear logs', action: 'clear_logs' },
+    { sep: true },
+    { label: 'Restart supervisor', action: 'supervisor_restart', danger: true },
+  ];
+
+  for (const item of items) {
+    if (item.sep) {
+      const sep = document.createElement('div');
+      sep.className = 'supervisor-menu-sep';
+      menu.appendChild(sep);
+      continue;
+    }
+    const opt = document.createElement('div');
+    opt.className = 'supervisor-menu-item' + (item.danger ? ' danger' : '');
+    opt.textContent = item.label;
+    if (item.disabled) {
+      opt.style.opacity = '0.4';
+      opt.style.cursor = 'default';
+    } else {
+      opt.addEventListener('click', () => {
+        ws.send(JSON.stringify({ action: item.action, containerId: '_supervisor' }));
+        logCommand(`${item.action} requested`, 'system');
+        menu.remove();
+      });
+    }
+    menu.appendChild(opt);
+  }
+
+  // Position relative to the header
+  const header = document.getElementById('command-header');
+  header.style.position = 'relative';
+  header.appendChild(menu);
+
+  setTimeout(() => {
+    document.addEventListener('click', function handler(e) {
+      if (!menu.contains(e.target)) {
+        menu.remove();
+        document.removeEventListener('click', handler);
+      }
+    });
+  }, 0);
+}
+
+document.getElementById('supervisor-menu-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  showSupervisorMenu(e.target);
 });
 
 // --- Rendering ---
@@ -1054,6 +1361,13 @@ document.getElementById('pipeline-btn').addEventListener('click', () => {
 function renderChat() {
   renderChatTabs();
   renderChatMessages();
+}
+
+function tabDotClass(sessionId, session) {
+  const hasError = session.messages.length > 0 && session.messages[session.messages.length - 1].content?.startsWith?.('[error:');
+  if (hasError) return 'error';
+  if (pending.has(sessionId) || streaming.has(sessionId)) return 'working';
+  return 'idle';
 }
 
 function renderChatTabs() {
@@ -1065,7 +1379,8 @@ function renderChatTabs() {
     const tab = document.createElement('div');
     tab.className = 'chat-tab' + (id === activeSessionId ? ' active' : '');
     tab.dataset.session = id;
-    tab.innerHTML = `${escHtml(session.type)}<span class="chat-tab-close" data-close="${id}">&times;</span>`;
+    const dotCls = tabDotClass(id, session);
+    tab.innerHTML = `<span class="chat-tab-dot ${dotCls}"></span>${escHtml(session.type)}<span class="chat-tab-close" data-close="${id}">&times;</span>`;
     tab.addEventListener('click', (e) => {
       if (e.target.dataset.close) {
         requestCloseSession(e.target.dataset.close);
@@ -1087,9 +1402,15 @@ function renderChatMessages() {
   }
 
   const session = sessions.get(activeSessionId);
-  container.innerHTML = session.messages.map(msg =>
+  let html = session.messages.map(msg =>
     `<div class="chat-msg ${msg.role}"><div class="chat-msg-role">${msg.role}</div><div class="chat-msg-content">${escHtml(msg.content)}</div></div>`
   ).join('');
+
+  if (pending.has(activeSessionId)) {
+    html += '<div class="chat-thinking">thinking...</div>';
+  }
+
+  container.innerHTML = html;
   container.scrollTop = container.scrollHeight;
 }
 
@@ -1147,7 +1468,9 @@ document.getElementById('chat-input').addEventListener('keydown', (e) => {
       renderChatMessages();
     }
 
-    // Send to server
+    // Mark as pending (waiting for model) and send to server
+    pending.add(activeSessionId);
+    renderThreadList();
     requestSendMessage(activeSessionId, text);
   }
 });

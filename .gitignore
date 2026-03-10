@@ -3,3 +3,4 @@ dist/
 *.sock
 .agents-global/
 .claude/settings.local.json
+logs/

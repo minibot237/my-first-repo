@@ -11,6 +11,7 @@ import type { ContainerRuntime } from "./runtime/types.js";
 import { startDashboard } from "./dashboard/server.js";
 import { emitDashboard, bus, type DashboardCommand } from "./dashboard/events.js";
 import { SessionManager, type SessionType } from "./sessions/manager.js";
+import { log as _log } from "./log.js";
 
 const RUNTIME = process.env["RUNTIME"] || "apple-containers";
 const SOCKET_PATH = process.env["SOCKET_PATH"] || path.join(process.cwd(), "minibot.sock");
@@ -19,8 +20,7 @@ const IMAGE_TAG = "minibot-agent";
 const CONTEXT_DIR = path.join(process.cwd(), "container-image");
 
 function log(msg: string, data?: unknown) {
-  const entry = { ts: new Date().toISOString(), component: "supervisor", msg, ...(data !== undefined ? { data } : {}) };
-  console.log(JSON.stringify(entry));
+  _log("supervisor", msg, data);
 }
 
 // --- Track active container sockets for sending commands ---
@@ -67,7 +67,7 @@ function handleMessage(sock: net.Socket, msg: Message, containerId: string) {
 const sessionManager = new SessionManager();
 
 // --- Handle dashboard commands ---
-bus.on("command", (cmd: DashboardCommand) => {
+bus.on("command", async (cmd: DashboardCommand) => {
   log("dashboard command", { action: cmd.action, containerId: cmd.containerId });
 
   if (cmd.action === "session_create") {
@@ -93,9 +93,39 @@ bus.on("command", (cmd: DashboardCommand) => {
     return;
   }
 
+  if (cmd.action === "session_clear_all") {
+    const count = sessionManager.list().length;
+    sessionManager.closeAll();
+    log("all sessions cleared", { count });
+    return;
+  }
+
+  if (cmd.action === "clear_logs") {
+    const logsDir = path.join(process.cwd(), "logs");
+    if (fs.existsSync(logsDir)) {
+      for (const f of fs.readdirSync(logsDir)) {
+        if (f.endsWith(".log")) {
+          try { fs.unlinkSync(path.join(logsDir, f)); } catch {}
+        }
+      }
+    }
+    log("logs cleared");
+    return;
+  }
+
   if (cmd.action === "pipeline_start") {
     startContainers();
     return;
+  }
+
+  if (cmd.action === "supervisor_restart") {
+    log("restart requested from dashboard");
+    // Clean shutdown — launchd will restart us
+    if (activeHandle) {
+      try { await activeHandle.stop(); } catch { /* may have exited */ }
+    }
+    sessionManager.closeAll();
+    process.exit(0);
   }
 
   if (cmd.action === "nudge") {

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import { bus, type DashboardEvent, type DashboardCommand } from "./events.js";
+import { localTimestamp } from "../log.js";
 
 const PORT = parseInt(process.env["DASHBOARD_PORT"] || "9100", 10);
 
@@ -55,7 +56,7 @@ export function startDashboard(getSnapshot?: () => StateSnapshot): void {
       ws.send(JSON.stringify({
         kind: "state_sync",
         containerId: "_sessions",
-        timestamp: new Date().toISOString(),
+        timestamp: localTimestamp(),
         data: getSnapshot(),
       }));
     }
@@ -72,7 +73,7 @@ export function startDashboard(getSnapshot?: () => StateSnapshot): void {
 
   server.listen(PORT, "0.0.0.0", () => {
     console.log(JSON.stringify({
-      ts: new Date().toISOString(),
+      ts: localTimestamp(),
       component: "dashboard",
       msg: "dashboard listening",
       data: { port: PORT, url: `http://localhost:${PORT}` },

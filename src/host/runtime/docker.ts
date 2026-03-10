@@ -1,12 +1,12 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { ContainerRuntime, ContainerHandle, StartOpts } from "./types.js";
+import { log as _log } from "../log.js";
 
 const exec = promisify(execFile);
 
 function log(msg: string, data?: unknown) {
-  const entry = { ts: new Date().toISOString(), component: "docker", msg, ...(data !== undefined ? { data } : {}) };
-  console.log(JSON.stringify(entry));
+  _log("docker", msg, data);
 }
 
 export class DockerRuntime implements ContainerRuntime {

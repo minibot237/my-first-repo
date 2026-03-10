@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { localTimestamp } from "../log.js";
 
 export interface DashboardEvent {
   kind: "container_start" | "container_stop" | "ops" | "work_in" | "work_out" | "error"
@@ -10,7 +11,7 @@ export interface DashboardEvent {
 }
 
 export interface DashboardCommand {
-  action: "nudge" | "stop" | "session_create" | "session_send" | "session_close" | "pipeline_start";
+  action: "nudge" | "stop" | "session_create" | "session_send" | "session_close" | "session_clear_all" | "pipeline_start" | "supervisor_restart" | "clear_logs";
   containerId: string;
   data?: unknown;
 }
@@ -21,7 +22,7 @@ export function emitDashboard(kind: DashboardEvent["kind"], containerId: string,
   bus.emit("dashboard", {
     kind,
     containerId,
-    timestamp: new Date().toISOString(),
+    timestamp: localTimestamp(),
     data,
   } satisfies DashboardEvent);
 }

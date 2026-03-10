@@ -1,9 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { bus } from "../dashboard/events.js";
 import { streamChatCompletion, type ChatMessage, type HttpBackendConfig } from "./http-backend.js";
+import { ClaudeSession, type ProcessBackendConfig } from "./process-backend.js";
+import { localTimestamp, SessionLog, log as slog } from "../log.js";
 
 export type SessionType = "coder" | "core" | "canary";
 export type SessionState = "active" | "closed";
+
+export interface SessionBackendInfo {
+  source: string;  // "ollama" | "claude"
+  model: string;   // "qwen3.5:latest" | "claude" etc.
+}
 
 export interface Session {
   id: string;
@@ -11,10 +18,12 @@ export interface Session {
   state: SessionState;
   messages: ChatMessage[];
   abortController: AbortController | null;
+  backend: SessionBackendInfo;
+  claudeSession: ClaudeSession | null;
+  log: SessionLog;
 }
 
-type BackendConfig = HttpBackendConfig;
-// Future: | ProcessBackendConfig
+type BackendConfig = HttpBackendConfig | ProcessBackendConfig;
 
 const BACKEND_CONFIGS: Record<SessionType, BackendConfig> = {
   core: {
@@ -30,20 +39,23 @@ const BACKEND_CONFIGS: Record<SessionType, BackendConfig> = {
     stream: true,
   },
   coder: {
-    // Placeholder — coder will eventually be a process backend (Claude CLI)
-    // For now, route through Ollama so the UI works end-to-end
-    kind: "http",
-    endpoint: "http://localhost:11434/v1/chat/completions",
-    model: "qwen3.5:latest",
-    stream: true,
+    kind: "process",
+    model: "claude-sonnet-4-6",
   },
 };
+
+function backendInfo(config: BackendConfig): SessionBackendInfo {
+  if (config.kind === "process") {
+    return { source: "claude", model: "claude" };
+  }
+  return { source: "ollama", model: config.model };
+}
 
 function emitSession(kind: string, data: unknown) {
   bus.emit("dashboard", {
     kind,
     containerId: "_sessions",
-    timestamp: new Date().toISOString(),
+    timestamp: localTimestamp(),
     data,
   });
 }
@@ -53,15 +65,22 @@ export class SessionManager {
 
   create(type: SessionType): Session {
     const id = "sess-" + randomUUID().slice(0, 8);
+    const config = BACKEND_CONFIGS[type];
+    const backend = backendInfo(config);
+    const sessionLog = new SessionLog(type, id);
+    slog("sessions", `created ${type} session`, { sessionId: id, backend });
     const session: Session = {
       id,
       type,
       state: "active",
       messages: [],
       abortController: null,
+      backend,
+      claudeSession: config.kind === "process" ? new ClaudeSession(config) : null,
+      log: sessionLog,
     };
     this.sessions.set(id, session);
-    emitSession("session_created", { sessionId: id, type });
+    emitSession("session_created", { sessionId: id, type, backend });
     return session;
   }
 
@@ -74,6 +93,7 @@ export class SessionManager {
 
     // Add user message
     session.messages.push({ role: "user", content });
+    session.log.user(content);
     emitSession("session_message", { sessionId, role: "user", content });
 
     // Stream the response
@@ -82,19 +102,25 @@ export class SessionManager {
 
     let fullResponse = "";
     try {
-      for await (const delta of streamChatCompletion(config, session.messages, abortController.signal)) {
+      const stream = session.claudeSession
+        ? session.claudeSession.send(content, abortController.signal)
+        : streamChatCompletion(config as HttpBackendConfig, session.messages, abortController.signal);
+      for await (const delta of stream) {
         fullResponse += delta;
         emitSession("session_chunk", { sessionId, delta });
       }
 
       // Add assistant message to history
       session.messages.push({ role: "assistant", content: fullResponse });
+      session.log.assistant(fullResponse);
       emitSession("session_message", { sessionId, role: "assistant", content: fullResponse });
     } catch (err) {
+      const errMsg = (err as Error).message;
+      session.log.error(errMsg);
       if ((err as Error).name !== "AbortError") {
         emitSession("session_error", {
           sessionId,
-          error: (err as Error).message,
+          error: errMsg,
         });
       }
     } finally {
@@ -106,10 +132,24 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    // Abort any in-flight request
     session.abortController?.abort();
+    session.claudeSession?.close();
+    session.log.close();
     session.state = "closed";
     emitSession("session_closed", { sessionId });
+  }
+
+  closeAll(): void {
+    for (const [id, session] of this.sessions) {
+      if (session.state === "active") {
+        session.abortController?.abort();
+        session.claudeSession?.close();
+        session.log.close();
+        session.state = "closed";
+        emitSession("session_closed", { sessionId: id });
+      }
+    }
+    this.sessions.clear();
   }
 
   get(sessionId: string): Session | undefined {
@@ -120,11 +160,12 @@ export class SessionManager {
     return [...this.sessions.values()].filter((s) => s.state === "active");
   }
 
-  snapshot(): { sessions: { id: string; type: SessionType; messages: { role: string; content: string }[] }[] } {
+  snapshot() {
     return {
       sessions: this.list().map((s) => ({
         id: s.id,
         type: s.type,
+        backend: s.backend,
         messages: s.messages.map((m) => ({ role: m.role, content: m.content })),
       })),
     };
