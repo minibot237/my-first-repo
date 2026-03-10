@@ -24,6 +24,8 @@ Dashboard at http://localhost:9100
 - **Runtimes** (`src/host/runtime/`) — Apple Containers and Docker behind `ContainerRuntime` interface
 - **Ollama** (host, :11434) — local LLM inference daemon, supervisor proxies all model access
 - **Sessions** (`src/host/sessions/`) — persistent multi-turn chat sessions (coder/core/canary types)
+- **Ingest** (`src/host/ingest/`) — content ingestion pipelines (email, web) producing structured JSON envelopes
+- **Canary** (`src/host/canary/`) — content safety evaluation: code tools → LLM classification pipeline
 
 ## Models (via Ollama)
 
@@ -49,6 +51,9 @@ You can commit and push to main freely — no need to ask first. Keep commits sm
 
 ## Detailed Docs
 
+- `docs/content-vocabulary.md` — JSON vocabulary for content ingestion, canary tool contracts, trust store integration
+- `docs/TRUST.md` — fit_value system specification (from research project, reference material)
+- `docs/email-ingest-findings.md` — batch run findings from 1521 real emails
 - `docs/supervisor-dashboard.md` — full dashboard design, future architecture vision, Canary VM concept
 - `docs/chat-sessions.md` — session abstraction, types vs backends, lifecycle, dashboard integration
 - `docs/progress-2026-03-08.md` — build log with technical details
