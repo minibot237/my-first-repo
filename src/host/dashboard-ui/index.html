@@ -578,6 +578,48 @@
     background: #333;
     color: #fff;
   }
+
+  /* --- VM panel menu (popover) --- */
+  .vm-menu-btn {
+    font-size: 14px;
+    color: #888;
+    cursor: pointer;
+    margin-left: 6px;
+    padding: 0 4px;
+    user-select: none;
+  }
+
+  .vm-menu-btn:hover { color: #ccc; }
+
+  .vm-panel-menu {
+    position: fixed;
+    background: #252540;
+    border: 1px solid #444;
+    border-radius: 6px;
+    padding: 4px 0;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    min-width: 140px;
+  }
+
+  .vm-panel-menu-item {
+    padding: 6px 14px;
+    font-size: 13px;
+    color: #ccc;
+    cursor: pointer;
+  }
+
+  .vm-panel-menu-item:hover { background: #333; color: #fff; }
+
+  /* Canary counters in header */
+  .canary-counts {
+    font-size: 11px;
+    margin-left: auto;
+    color: #555;
+  }
+
+  .canary-counts .safe-count { color: #4ade80; }
+  .canary-counts .flag-count { color: #ef4444; }
 </style>
 </head>
 <body>
@@ -741,10 +783,14 @@ function ensureVM(id) {
 
   const header = document.createElement('div');
   header.className = 'vm-header';
+  const extraHtml = id === 'canary'
+    ? `<span class="canary-counts"></span><span class="vm-menu-btn" data-vm-menu="${id}">&#9662;</span>`
+    : '';
   header.innerHTML = `
     <div class="vm-status"></div>
     <span class="vm-id">${id.toUpperCase()}</span>
     <span class="vm-runtime"></span>
+    ${extraHtml}
     <span class="vm-close">[x]</span>
   `;
 
@@ -785,7 +831,23 @@ function ensureVM(id) {
     });
   });
 
+  // Wire up panel menu button
+  const menuBtn = header.querySelector('.vm-menu-btn');
+  if (menuBtn) {
+    menuBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showVmPanelMenu(menuBtn, id);
+    });
+  }
+
+  // Set canary runtime label
+  if (id === 'canary') {
+    header.querySelector('.vm-runtime').textContent = 'qwen2.5:3b';
+    updateCanaryCounts();
+  }
+
   header.addEventListener('click', (e) => {
+    if (e.target.classList.contains('vm-menu-btn')) return;
     if (e.target.classList.contains('vm-close')) {
       vm.focused = false;
       panel.classList.remove('focused');
@@ -954,6 +1016,10 @@ function handleEvent(event) {
     case 'pipeline_status':
       updatePipeline(data.state, data.detail);
       break;
+
+    case 'canary_result':
+      handleCanaryResult(data);
+      break;
   }
 }
 
@@ -1003,9 +1069,23 @@ document.getElementById('command-input').addEventListener('keydown', (e) => {
       document.getElementById('command-log').innerHTML = '';
       break;
 
+    case 'scan': {
+      const text = parts.slice(1).join(' ');
+      if (!text) {
+        logCommand('usage: scan <content to evaluate>', 'system');
+        break;
+      }
+      ws.send(JSON.stringify({
+        action: 'canary_evaluate',
+        containerId: 'canary',
+        data: { content: text },
+      }));
+      break;
+    }
+
     default:
       logCommand('unknown command: ' + parts[0], 'error');
-      logCommand('commands: nudge [id|*], filter [text], status, clear', 'system');
+      logCommand('commands: nudge [id|*], filter [text], status, clear, scan <text>', 'system');
   }
 });
 
@@ -1273,6 +1353,96 @@ function handleStateSync(data) {
   if (sessions.size > 0) {
     logCommand(`restored ${sessions.size} session(s)`, 'system');
   }
+}
+
+// --- Canary tracking ---
+
+let canarySafeCount = 0;
+let canaryFlagCount = 0;
+
+function updateCanaryCounts() {
+  const el = document.querySelector('.canary-counts');
+  if (el) {
+    el.innerHTML = `<span class="safe-count">${canarySafeCount}</span> / <span class="flag-count">${canaryFlagCount}</span>`;
+  }
+}
+
+function resetCanaryCounts() {
+  canarySafeCount = 0;
+  canaryFlagCount = 0;
+  updateCanaryCounts();
+  logCommand('canary counters reset', 'system');
+}
+
+function handleCanaryResult(data) {
+  if (data.error) {
+    canaryFlagCount++;
+    updateCanaryCounts();
+    logCommand(`canary: ERROR  obs:0.00  ${data.error}`, 'error');
+    return;
+  }
+
+  const safe = data.safe;
+  const fit = (data.fitScore ?? 0).toFixed(2);
+  const obs = (data.observationScore ?? 0).toFixed(2);
+  const ms = data.durationMs;
+
+  if (safe) {
+    canarySafeCount++;
+  } else {
+    canaryFlagCount++;
+  }
+  updateCanaryCounts();
+
+  // Build console line
+  let line = safe ? 'canary: SAFE' : 'canary: FLAGGED';
+  line += `  fit:${fit}  obs:${obs}`;
+  if (data.regexHits && data.regexHits.length > 0) {
+    const patterns = data.regexHits.map(h => typeof h === 'string' ? h : h.pattern).join(', ');
+    line += `  regex:[${patterns}]`;
+  }
+  line += `  (${ms}ms)`;
+
+  logCommand(line, safe ? 'success' : 'error');
+}
+
+function showVmPanelMenu(anchorEl, containerId) {
+  document.querySelector('.vm-panel-menu')?.remove();
+
+  const menu = document.createElement('div');
+  menu.className = 'vm-panel-menu';
+
+  const items = [];
+  if (containerId === 'canary') {
+    items.push({ label: 'Reset counters', action: () => resetCanaryCounts() });
+  }
+
+  if (items.length === 0) return;
+
+  for (const item of items) {
+    const opt = document.createElement('div');
+    opt.className = 'vm-panel-menu-item';
+    opt.textContent = item.label;
+    opt.addEventListener('click', () => {
+      item.action();
+      menu.remove();
+    });
+    menu.appendChild(opt);
+  }
+
+  const rect = anchorEl.getBoundingClientRect();
+  menu.style.right = (window.innerWidth - rect.right) + 'px';
+  menu.style.top = (rect.bottom + 2) + 'px';
+  document.body.appendChild(menu);
+
+  setTimeout(() => {
+    document.addEventListener('click', function handler(e) {
+      if (!menu.contains(e.target)) {
+        menu.remove();
+        document.removeEventListener('click', handler);
+      }
+    });
+  }, 0);
 }
 
 // --- Pipeline controls ---

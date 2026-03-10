@@ -11,9 +11,12 @@ import type { ContainerRuntime } from "./runtime/types.js";
 import { startDashboard } from "./dashboard/server.js";
 import { emitDashboard, bus, type DashboardCommand } from "./dashboard/events.js";
 import { SessionManager, type SessionType } from "./sessions/manager.js";
-import { log as _log } from "./log.js";
+import { evaluateContent } from "./canary/evaluate.js";
+import { log as _log, localTimestamp } from "./log.js";
 
 const RUNTIME = process.env["RUNTIME"] || "apple-containers";
+const CANARY_LOG_PATH = path.join(process.cwd(), "logs", "canary-evaluations.log");
+const CANARY_THREATS_PATH = path.join(process.cwd(), "logs", "canary-threats.log");
 const SOCKET_PATH = process.env["SOCKET_PATH"] || path.join(process.cwd(), "minibot.sock");
 const CONTAINER_SOCKET = "/tmp/minibot.sock";
 const IMAGE_TAG = "minibot-agent";
@@ -110,6 +113,81 @@ bus.on("command", async (cmd: DashboardCommand) => {
       }
     }
     log("logs cleared");
+    return;
+  }
+
+  if (cmd.action === "canary_evaluate") {
+    const { content } = cmd.data as { content: string };
+    log("canary evaluate requested", { contentLength: content.length });
+
+    // Show scan request in canary vm-panel work channel
+    emitDashboard("work_in", "canary", { type: "scan", payload: { content } });
+
+    evaluateContent(content).then((result) => {
+      // Show verdict in canary vm-panel work channel
+      emitDashboard("work_out", "canary", {
+        type: "verdict",
+        payload: {
+          safe: result.safe,
+          fitScore: result.fitScore,
+          observationScore: result.observationScore,
+          source: result.source,
+          regexHits: result.regexHits.map(h => h.pattern),
+          flags: result.llmVerdict?.flags || [],
+        },
+      });
+      // Console output
+      emitDashboard("canary_result", "canary", result);
+
+      // Append to canary evaluation log (full content, every evaluation)
+      const logEntry = {
+        ts: localTimestamp(),
+        content,
+        safe: result.safe,
+        source: result.source,
+        fitScore: result.fitScore,
+        observationScore: result.observationScore,
+        regexHits: result.regexHits.map(h => h.pattern),
+        flags: result.llmVerdict?.flags || [],
+        reasoning: result.llmVerdict?.reasoning || null,
+        durationMs: result.durationMs,
+      };
+      fs.mkdirSync(path.dirname(CANARY_LOG_PATH), { recursive: true });
+      fs.appendFileSync(CANARY_LOG_PATH, JSON.stringify(logEntry) + "\n");
+
+      // Duplicate flagged content to threats log for processing
+      if (!result.safe) {
+        fs.appendFileSync(CANARY_THREATS_PATH, JSON.stringify(logEntry) + "\n");
+      }
+    }).catch((err) => {
+      emitDashboard("work_out", "canary", {
+        type: "error",
+        payload: { error: (err as Error).message },
+      });
+      emitDashboard("canary_result", "canary", {
+        safe: false,
+        source: "error",
+        regexHits: [],
+        llmVerdict: null,
+        rawLlmResponse: null,
+        durationMs: 0,
+        fitScore: 0.0,
+        observationScore: 0.0,
+        error: (err as Error).message,
+      });
+
+      // Log errors to both files (errors are threats — something blocked evaluation)
+      const errorEntry = {
+        ts: localTimestamp(),
+        content,
+        safe: false,
+        source: "error",
+        error: (err as Error).message,
+      };
+      fs.mkdirSync(path.dirname(CANARY_LOG_PATH), { recursive: true });
+      fs.appendFileSync(CANARY_LOG_PATH, JSON.stringify(errorEntry) + "\n");
+      fs.appendFileSync(CANARY_THREATS_PATH, JSON.stringify(errorEntry) + "\n");
+    });
     return;
   }
 
