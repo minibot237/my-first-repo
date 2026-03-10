@@ -9,6 +9,7 @@
     "agent": "node dist/container/agent.js"
   },
   "devDependencies": {
+    "@types/cheerio": "^0.22.35",
     "@types/mailparser": "^3.4.6",
     "@types/node": "^22",
     "@types/ws": "^8.18.1",
@@ -16,6 +17,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.72",
+    "cheerio": "^1.2.0",
     "mailparser": "^3.9.4",
     "ws": "^8.19.0"
   }
