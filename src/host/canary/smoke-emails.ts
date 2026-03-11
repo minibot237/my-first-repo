@@ -2,6 +2,7 @@
  * Smoke test: run real emails through the full canary pipeline.
  * Ingests .eml files → ContentEnvelope → evaluatePipeline() → results.
  *
+ * Test data lives in test-data/smoke-emails.json (gitignored).
  * Appends to logs/smoke-emails.log with a header/footer per run.
  * Usage: node dist/host/canary/smoke-emails.js
  */
@@ -12,22 +13,18 @@ import { ingestEmail } from "../ingest/email.js";
 import { evaluatePipeline } from "./pipeline.js";
 import { CANARY_CONFIG } from "./evaluate.js";
 
-// Load .env if present (no dependencies needed)
-try {
-  const envPath = resolve(process.cwd(), ".env");
-  const envContent = readFileSync(envPath, "utf-8");
-  for (const line of envContent.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq < 0) continue;
-    const key = trimmed.slice(0, eq).trim();
-    const val = trimmed.slice(eq + 1).trim();
-    if (!process.env[key]) process.env[key] = val;
-  }
-} catch { /* no .env, that's fine */ }
+// ── Load test data from JSON ─────────────────────────────────────────
 
-const TEST_DIR = resolve(process.env.HOME!, "Documents/test-emails");
+interface SmokeData {
+  testDir: string;
+  accounts: Record<string, string>;
+  emails: { account: string; file: string; sizeKB: number }[];
+}
+
+const DATA_FILE = resolve(process.cwd(), "test-data", "smoke-emails.json");
+const data: SmokeData = JSON.parse(readFileSync(DATA_FILE, "utf-8"));
+
+const TEST_DIR = data.testDir.replace("~", process.env.HOME!);
 const LOG_FILE = resolve(process.cwd(), "logs", "smoke-emails.log");
 
 // Ensure logs dir exists
@@ -38,50 +35,6 @@ function out(line: string) {
   console.log(line);
   appendFileSync(LOG_FILE, line + "\n");
 }
-
-// Account aliases — keeps real addresses out of source control.
-// Map these to the folder names under ~/Documents/test-emails/
-const ACCOUNTS: Record<string, string> = {
-  "personal": process.env.SMOKE_ACCOUNT_1 ?? "personal",
-  "work":     process.env.SMOKE_ACCOUNT_2 ?? "work",
-};
-
-// Pick a diverse set across accounts and content types
-const TEST_EMAILS: { account: string; file: string; label: string }[] = [
-  // Newsletters / news digests
-  { account: "personal",
-    file: "News from Hackster.io 💙.eml",
-    label: "tech newsletter" },
-  { account: "personal",
-    file: "$1.6T Gone | Adobe Slumps | Senate Stalls | Containers Cheaper.eml",
-    label: "finance news digest" },
-
-  // Marketing / promotional
-  { account: "personal",
-    file: "Up to 60% off Choice bestsellers.eml",
-    label: "promo sale" },
-  { account: "work",
-    file: "ONLY 48 HOURS LEFT! Early Bird Conference Discount Expiring Soon.eml",
-    label: "urgency marketing" },
-
-  // Real estate alerts (automated, transactional-ish)
-  { account: "personal",
-    file: "An Onalaska home for you at $585K, and 3 other updates.eml",
-    label: "real estate alert" },
-
-  // Auction / high-pressure
-  { account: "personal",
-    file: "LIVE AND ENDING - Monster February Auction.eml",
-    label: "auction urgency" },
-
-  // Tech / product
-  { account: "work",
-    file: "See What\u2019s New in Fusion \u2014 Live in 2 Days.eml",
-    label: "product launch" },
-  { account: "work",
-    file: "Early Access_ New Mini Flex Colors Drop March 5.eml",
-    label: "early access promo" },
-];
 
 async function main() {
   const ts = new Date().toISOString().replace("T", " ").replace(/\.\d+Z/, "");
@@ -96,6 +49,7 @@ async function main() {
     `║  model: ${cfg.model.padEnd(20)}  stream: ${String(cfg.stream).padEnd(14)}  ║`,
     `║  chunks: [${cfg.chunkMin}-${cfg.chunkMax}]  overlap: ${String(cfg.overlapSize).padEnd(5)}  expand: ${String(cfg.maxChunkExpansion).padEnd(5)} ║`,
     `║  clean: urls=${cfg.stripUrls} entities=${cfg.stripHtmlEntities} collapse=${cfg.collapseWhitespace}   ║`,
+    `║  emails: ${data.emails.length}                                                ║`,
     `╚══════════════════════════════════════════════════════════════╝`,
     "",
   ].join("\n");
@@ -107,11 +61,15 @@ async function main() {
   const durations: number[] = [];
   const batchStart = Date.now();
 
-  for (const { account, file, label } of TEST_EMAILS) {
-    const path = resolve(TEST_DIR, ACCOUNTS[account] ?? account, file);
+  for (const { account, file } of data.emails) {
+    const acctDir = data.accounts[account] ?? account;
+    const emailPath = resolve(TEST_DIR, acctDir, file);
+
+    // Use filename (sans .eml) as label, truncated
+    const label = file.replace(/\.eml$/, "").slice(0, 40);
 
     try {
-      const envelope = await ingestEmail(path);
+      const envelope = await ingestEmail(emailPath);
       const result = await evaluatePipeline(envelope);
 
       const status = result.safe ? "SAFE" : "FLAGGED";
@@ -120,7 +78,7 @@ async function main() {
 
       const m = result.evaluation.metrics;
       out(
-        `  ${status.padEnd(7)}  ${label.padEnd(22)}  ` +
+        `  ${status.padEnd(7)}  ${label.padEnd(42)}  ` +
         `fit:${result.evaluation.fitScore.toFixed(2)}  ` +
         `obs:${result.evaluation.observationScore.toFixed(2)}  ` +
         `signals:${result.codeSignals.length}  ` +
@@ -157,7 +115,7 @@ async function main() {
       }
     } catch (err) {
       errors++;
-      out(`  ERROR    ${label.padEnd(22)}  ${(err as Error).message}`);
+      out(`  ERROR    ${label.padEnd(42)}  ${(err as Error).message}`);
     }
   }
 
@@ -172,10 +130,10 @@ async function main() {
   // ── Run footer ──
   const footer = [
     "",
-    `  ── Results: ${safe} safe, ${flagged} flagged, ${errors} errors, ${TEST_EMAILS.length} total ──`,
+    `  ── Results: ${safe} safe, ${flagged} flagged, ${errors} errors, ${data.emails.length} total ──`,
     `  ── Throughput: ${batchMs}ms total, ${avg.toFixed(0)}ms avg, ${min}ms min, ${max}ms max ──`,
     `  ── Latency: p50=${p50}ms, p95=${p95}ms ──`,
-    `  ── Rate: ${(TEST_EMAILS.length / (batchMs / 1000)).toFixed(1)} emails/sec ──`,
+    `  ── Rate: ${(data.emails.length / (batchMs / 1000)).toFixed(1)} emails/sec ──`,
     "",
   ].join("\n");
   out(footer);

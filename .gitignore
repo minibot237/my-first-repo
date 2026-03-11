@@ -4,5 +4,6 @@ dist/
 .agents-global/
 .claude/settings.local.json
 logs/
+test-data/
 .env
 .DS_Store
