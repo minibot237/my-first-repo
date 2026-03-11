@@ -115,10 +115,16 @@ export function prepareForLlm(envelope: ContentEnvelope, codeEval: CodeEvaluatio
 export function formatForCanary(payload: LlmPayload): string {
   const parts: string[] = [];
 
-  // Code signals as context for the LLM
-  if (payload.codeSignals.length > 0) {
+  // Only pass high/critical code signals to the LLM.
+  // Low/medium signals (return-path mismatches, reply-to domains, etc.) are
+  // metadata concerns already handled by code tools — passing them to the LLM
+  // biases it toward "unsafe" before it even reads the content.
+  const criticalSignals = payload.codeSignals.filter(
+    s => s.severity === "high" || s.severity === "critical"
+  );
+  if (criticalSignals.length > 0) {
     parts.push("CODE ANALYSIS SIGNALS:");
-    for (const sig of payload.codeSignals) {
+    for (const sig of criticalSignals) {
       parts.push(`  [${sig.severity}] ${sig.signal}${sig.detail ? `: ${sig.detail}` : ""}`);
     }
     parts.push("");

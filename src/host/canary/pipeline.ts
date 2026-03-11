@@ -62,7 +62,8 @@ export async function evaluatePipeline(envelope: ContentEnvelope): Promise<Pipel
   const canaryInput = formatForCanary(payload);
 
   // Step 3: Run canary LLM (includes regex pre-scan)
-  const evaluation = await evaluateContent(canaryInput);
+  // Pass content type so the right system prompt is used
+  const evaluation = await evaluateContent(canaryInput, envelope.content.type);
 
   // Step 4: Combine — content is unsafe if code tools found critical signals OR LLM says unsafe
   const criticalCodeSignals = codeEval.signals.filter(s => s.severity === "critical");

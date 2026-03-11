@@ -13,6 +13,37 @@ export interface LlmVerdict {
   reasoning: string;     // brief explanation
 }
 
+/** Per-chunk metrics from a single LLM call */
+export interface ChunkMetrics {
+  chunkIndex: number;        // 0-based
+  chunkCount: number;        // total chunks for this content
+  chunkMin: number;           // configured chunk min (chars)
+  chunkMax: number;           // configured chunk max (chars)
+  overlapSize: number;        // configured overlap (chars)
+  contentChars: number;      // content chars in this chunk
+  contentTokens: number;     // content tokens (from Ollama usage, 0 if unavailable)
+  overheadChars: number;     // system prompt + framing chars
+  overheadTokens: number;    // prompt_tokens - content_tokens estimate
+  outputChars: number;       // LLM response chars
+  outputTokens: number;      // completion_tokens from Ollama usage
+  totalTokens: number;       // prompt_tokens + completion_tokens
+  ttftMs: number;            // time to first token
+  genMs: number;             // generation time (total - ttft)
+  totalMs: number;           // wall clock for this chunk
+}
+
+/** Aggregated metrics across all chunks */
+export interface EvalMetrics {
+  inputChars: number;         // total content chars sent to LLM
+  overheadChars: number;      // system prompt + user message framing chars
+  outputChars: number;        // total LLM response chars
+  ttftMs: number;             // time to first token (first chunk)
+  inputTokens: number;        // total prompt tokens across chunks
+  outputTokens: number;       // total completion tokens across chunks
+  totalTokens: number;        // total tokens across chunks
+  chunks: ChunkMetrics[];     // per-chunk breakdown
+}
+
 /** Full evaluation result combining regex + LLM layers */
 export interface EvaluationResult {
   safe: boolean;              // final determination
@@ -23,4 +54,5 @@ export interface EvaluationResult {
   durationMs: number;
   fitScore: number;           // 0.0–0.9, trust level from canary LLM (min of chunks)
   observationScore: number;   // 0.0–1.0, supervisor's assessment of canary behavior
+  metrics: EvalMetrics;       // size and timing breakdown
 }
