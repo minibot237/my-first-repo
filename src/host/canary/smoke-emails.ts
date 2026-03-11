@@ -7,10 +7,25 @@
  */
 
 import { resolve } from "node:path";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { ingestEmail } from "../ingest/email.js";
 import { evaluatePipeline } from "./pipeline.js";
 import { CANARY_CONFIG } from "./evaluate.js";
+
+// Load .env if present (no dependencies needed)
+try {
+  const envPath = resolve(process.cwd(), ".env");
+  const envContent = readFileSync(envPath, "utf-8");
+  for (const line of envContent.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq < 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const val = trimmed.slice(eq + 1).trim();
+    if (!process.env[key]) process.env[key] = val;
+  }
+} catch { /* no .env, that's fine */ }
 
 const TEST_DIR = resolve(process.env.HOME!, "Documents/test-emails");
 const LOG_FILE = resolve(process.cwd(), "logs", "smoke-emails.log");
