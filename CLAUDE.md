@@ -40,6 +40,24 @@ Both Qwen models run on the host via Ollama as a native daemon. Containers have 
 
 You can commit and push to main freely — no need to ask first. Keep commits small and descriptive.
 
+## Locale
+
+This is a local home assistant, not a cloud service. All timestamps, logs, and user-facing times should be in **US Pacific** (America/Los_Angeles). No UTC unless talking to an external API that requires it.
+
+## LLM Output Safety Rules
+
+Code that processes LLM responses must be **deterministic and inert**. The LLM is untrusted input — treat its output like user-submitted form data.
+
+- **No `eval()`, no `Function()`, no dynamic `require()/import()`** based on LLM output
+- **No shell exec** where any part of the command is derived from LLM output
+- **No path construction** from LLM output (log filenames, file writes, requires)
+- **No template interpolation** of LLM output into code, commands, or prompts for other models
+- **No dynamic dispatch** — don't use LLM output as keys to look up functions to call
+- **JSON.parse() is the boundary.** LLM returns a string → parse it → read known fields → done. If parse fails, error and move on.
+- **The canary pipeline must stay dumb.** It makes structured LLM calls, reads the response, packages results. That's it. No autonomy, no tool use, no side effects beyond returning data to the supervisor.
+
+The container is belt-and-suspenders. The real containment is the code itself being non-dynamic. If this rule holds, prompt injection in an email can confuse the LLM's *answer* but cannot make the *code* do anything it wasn't already going to do.
+
 ## Key Conventions
 
 - Single HTML file for the dashboard — all CSS and JS inline, no build tools
@@ -59,3 +77,4 @@ You can commit and push to main freely — no need to ask first. Keep commits sm
 - `docs/progress-2026-03-08.md` — build log with technical details
 - `docs/container-runtimes.md` — runtime-specific notes (Apple Containers vs Docker)
 - `docs/agent-capabilities.md` — (planned) per-VM capability manifests, how supervisor shapes each agent's world view
+- `docs/progress-2026-03-11.md` — threat model brainstorm: injection paths, canary containment, coder-as-gatekeeper
