@@ -16,8 +16,10 @@ export function localTimestamp(): string {
   return local.toISOString().replace("Z", "") + sign + hh + ":" + mm;
 }
 
-/** Structured log to stdout with local timestamp */
+/** Structured log to stdout with local timestamp.
+ *  Set LOG_QUIET=1 to suppress stdout (useful for smoke tests). */
 export function log(component: string, msg: string, data?: unknown) {
+  if (process.env.LOG_QUIET) return;
   const entry = { ts: localTimestamp(), component, msg, ...(data !== undefined ? { data } : {}) };
   console.log(JSON.stringify(entry));
 }

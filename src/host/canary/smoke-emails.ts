@@ -61,12 +61,15 @@ async function main() {
   const durations: number[] = [];
   const batchStart = Date.now();
 
-  for (const { account, file } of data.emails) {
+  const total = data.emails.length;
+  for (let i = 0; i < total; i++) {
+    const { account, file } = data.emails[i];
     const acctDir = data.accounts[account] ?? account;
     const emailPath = resolve(TEST_DIR, acctDir, file);
 
     // Use filename (sans .eml) as label, truncated
     const label = file.replace(/\.eml$/, "").slice(0, 40);
+    const progress = `[${String(i + 1).padStart(String(total).length)}/${total}]`;
 
     try {
       const envelope = await ingestEmail(emailPath);
@@ -78,7 +81,7 @@ async function main() {
 
       const m = result.evaluation.metrics;
       out(
-        `  ${status.padEnd(7)}  ${label.padEnd(42)}  ` +
+        `  ${progress} ${status.padEnd(7)}  ${label.padEnd(42)}  ` +
         `fit:${result.evaluation.fitScore.toFixed(2)}  ` +
         `obs:${result.evaluation.observationScore.toFixed(2)}  ` +
         `signals:${result.codeSignals.length}  ` +
@@ -115,7 +118,7 @@ async function main() {
       }
     } catch (err) {
       errors++;
-      out(`  ERROR    ${label.padEnd(42)}  ${(err as Error).message}`);
+      out(`  ${progress} ERROR    ${label.padEnd(42)}  ${(err as Error).message}`);
     }
   }
 
