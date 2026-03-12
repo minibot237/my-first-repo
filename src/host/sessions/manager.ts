@@ -29,7 +29,7 @@ const BACKEND_CONFIGS: Record<SessionType, BackendConfig> = {
   core: {
     kind: "http",
     endpoint: "http://localhost:11434/v1/chat/completions",
-    model: "qwen3.5:latest",
+    model: "gemma3:4b",
     stream: true,
   },
   canary: {

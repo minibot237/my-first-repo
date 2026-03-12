@@ -30,11 +30,11 @@ Dashboard at http://localhost:9100
 
 ## Models (via Ollama)
 
-- **CORE** — Qwen 3.5 9B (Q4_K_M, ~5-6GB). Routing and decision-making for the primary agent loop.
-- **Canary** — Qwen 2.5 3B (Q4_K_M, ~2.4GB). Injection detection in the safety/honeypot VM. Tight prompt, flag-anything-weird mode.
+- **CORE** — Gemma 3 4B (`gemma3:4b`, Q4_K_M, ~3GB). Routing, triage, summarization, and decision-making for the primary agent loop. Replaced Qwen 3.5 9B after model eval (2026-03-11) — better routing quality at 30x faster TTFT.
+- **Canary** — Qwen 2.5 3B (`qwen2.5:3b`, Q4_K_M, ~2.4GB). Injection detection in the safety/honeypot VM. Tight prompt, flag-anything-weird mode.
 - **Coder** — Claude Code CLI. Code generation and tool building (not served by Ollama).
 
-Both Qwen models run on the host via Ollama as a native daemon. Containers have no direct model access — all inference requests flow through the supervisor's session manager, which routes to the appropriate backend and logs everything.
+Both models run on the host via Ollama as a native daemon (~5.4GB combined). Containers have no direct model access — all inference requests flow through the supervisor's session manager, which routes to the appropriate backend and logs everything.
 
 ## Git
 
@@ -78,3 +78,4 @@ The container is belt-and-suspenders. The real containment is the code itself be
 - `docs/container-runtimes.md` — runtime-specific notes (Apple Containers vs Docker)
 - `docs/agent-capabilities.md` — (planned) per-VM capability manifests, how supervisor shapes each agent's world view
 - `docs/progress-2026-03-11.md` — threat model brainstorm: injection paths, canary containment, coder-as-gatekeeper
+- `docs/task-core-model-eval.md` — CORE model eval results: gemma3:4b selected over 7 candidates

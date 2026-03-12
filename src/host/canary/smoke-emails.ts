@@ -17,7 +17,9 @@ import { CANARY_CONFIG } from "./evaluate.js";
 
 interface SmokeData {
   testDir: string;
+  testDirs?: Record<string, string>;  // per-account base dir overrides
   accounts: Record<string, string>;
+  spamAccounts?: string[];            // accounts that are known spam (expect SAFE)
   emails: { account: string; file: string; sizeKB: number }[];
 }
 
@@ -25,6 +27,13 @@ const DATA_FILE = resolve(process.cwd(), "test-data", "smoke-emails.json");
 const data: SmokeData = JSON.parse(readFileSync(DATA_FILE, "utf-8"));
 
 const TEST_DIR = data.testDir.replace("~", process.env.HOME!);
+
+/** Resolve base directory for an account — uses testDirs override if present */
+function getTestDir(account: string): string {
+  const override = data.testDirs?.[account];
+  if (override) return override.replace("~", process.env.HOME!);
+  return TEST_DIR;
+}
 const LOG_FILE = resolve(process.cwd(), "logs", "smoke-emails.log");
 
 // Ensure logs dir exists
@@ -58,6 +67,10 @@ async function main() {
   let safe = 0;
   let flagged = 0;
   let errors = 0;
+  let spamSafe = 0;
+  let spamFlagged = 0;
+  let spamErrors = 0;
+  const spamSet = new Set(data.spamAccounts ?? []);
   const durations: number[] = [];
   const batchStart = Date.now();
 
@@ -65,9 +78,11 @@ async function main() {
   for (let i = 0; i < total; i++) {
     const { account, file } = data.emails[i];
     const acctDir = data.accounts[account] ?? account;
-    const emailPath = resolve(TEST_DIR, acctDir, file);
+    const emailPath = resolve(getTestDir(account), acctDir, file);
 
     // Use filename (sans .eml) as label, truncated
+    const isSpamAcct = spamSet.has(account);
+    const tag = isSpamAcct ? "SPAM " : "";
     const label = file.replace(/\.eml$/, "").slice(0, 40);
     const progress = `[${String(i + 1).padStart(String(total).length)}/${total}]`;
 
@@ -75,13 +90,15 @@ async function main() {
       const envelope = await ingestEmail(emailPath);
       const result = await evaluatePipeline(envelope);
 
+      const isSpam = spamSet.has(account);
       const status = result.safe ? "SAFE" : "FLAGGED";
-      if (result.safe) safe++; else flagged++;
+      if (result.safe) { safe++; if (isSpam) spamSafe++; }
+      else { flagged++; if (isSpam) spamFlagged++; }
       durations.push(result.durationMs);
 
       const m = result.evaluation.metrics;
       out(
-        `  ${progress} ${status.padEnd(7)}  ${label.padEnd(42)}  ` +
+        `  ${progress} ${tag}${status.padEnd(7)}  ${label.padEnd(42)}  ` +
         `fit:${result.evaluation.fitScore.toFixed(2)}  ` +
         `obs:${result.evaluation.observationScore.toFixed(2)}  ` +
         `signals:${result.codeSignals.length}  ` +
@@ -118,6 +135,7 @@ async function main() {
       }
     } catch (err) {
       errors++;
+      if (spamSet.has(account)) spamErrors++;
       out(`  ${progress} ERROR    ${label.padEnd(42)}  ${(err as Error).message}`);
     }
   }
@@ -131,14 +149,23 @@ async function main() {
   const p95 = sorted[Math.floor(sorted.length * 0.95)] ?? 0;
 
   // ── Run footer ──
-  const footer = [
+  const spamTotal = spamSafe + spamFlagged + spamErrors;
+  const realTotal = data.emails.length - spamTotal;
+  const footerLines = [
     "",
     `  ── Results: ${safe} safe, ${flagged} flagged, ${errors} errors, ${data.emails.length} total ──`,
+  ];
+  if (spamTotal > 0) {
+    footerLines.push(`  ── Spam:    ${spamSafe} safe, ${spamFlagged} flagged, ${spamErrors} errors, ${spamTotal} total (expect all safe) ──`);
+    footerLines.push(`  ── Real:    ${safe - spamSafe} safe, ${flagged - spamFlagged} flagged, ${errors - spamErrors} errors, ${realTotal} total ──`);
+  }
+  footerLines.push(
     `  ── Throughput: ${batchMs}ms total, ${avg.toFixed(0)}ms avg, ${min}ms min, ${max}ms max ──`,
     `  ── Latency: p50=${p50}ms, p95=${p95}ms ──`,
     `  ── Rate: ${(data.emails.length / (batchMs / 1000)).toFixed(1)} emails/sec ──`,
     "",
-  ].join("\n");
+  );
+  const footer = footerLines.join("\n");
   out(footer);
 }
 
