@@ -47,7 +47,7 @@ export interface EvalMetrics {
 /** Full evaluation result combining regex + LLM layers */
 export interface EvaluationResult {
   safe: boolean;              // final determination
-  source: "regex" | "llm";   // which layer made the call
+  source: "regex" | "llm" | "pre-filter";  // which layer made the call
   regexHits: RegexHit[];      // always populated (even if empty)
   llmVerdict: LlmVerdict | null;  // null if regex short-circuited
   rawLlmResponse: string | null;  // the raw model output for monitoring

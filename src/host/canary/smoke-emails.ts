@@ -70,6 +70,8 @@ async function main() {
   let spamSafe = 0;
   let spamFlagged = 0;
   let spamErrors = 0;
+  let skipped = 0;
+  let trusted = 0;
   const spamSet = new Set(data.spamAccounts ?? []);
   const durations: number[] = [];
   const batchStart = Date.now();
@@ -94,11 +96,14 @@ async function main() {
       const status = result.safe ? "SAFE" : "FLAGGED";
       if (result.safe) { safe++; if (isSpam) spamSafe++; }
       else { flagged++; if (isSpam) spamFlagged++; }
+      if (result.preFilterTier === "skip") skipped++;
+      else if (result.preFilterTier === "trusted") trusted++;
       durations.push(result.durationMs);
 
       const m = result.evaluation.metrics;
+      const tierTag = result.preFilterTier !== "full" ? `[${result.preFilterTier}] ` : "";
       out(
-        `  ${progress} ${tag}${status.padEnd(7)}  ${label.padEnd(42)}  ` +
+        `  ${progress} ${tag}${status.padEnd(7)}  ${tierTag}${label.padEnd(42 - tierTag.length)}  ` +
         `fit:${result.evaluation.fitScore.toFixed(2)}  ` +
         `obs:${result.evaluation.observationScore.toFixed(2)}  ` +
         `signals:${result.codeSignals.length}  ` +
@@ -159,6 +164,8 @@ async function main() {
     footerLines.push(`  ── Spam:    ${spamSafe} safe, ${spamFlagged} flagged, ${spamErrors} errors, ${spamTotal} total (expect all safe) ──`);
     footerLines.push(`  ── Real:    ${safe - spamSafe} safe, ${flagged - spamFlagged} flagged, ${errors - spamErrors} errors, ${realTotal} total ──`);
   }
+  const fullCount = data.emails.length - errors - skipped - trusted;
+  footerLines.push(`  ── PreFilter: ${skipped} skipped, ${trusted} trusted, ${fullCount} full ──`);
   footerLines.push(
     `  ── Throughput: ${batchMs}ms total, ${avg.toFixed(0)}ms avg, ${min}ms min, ${max}ms max ──`,
     `  ── Latency: p50=${p50}ms, p95=${p95}ms ──`,

@@ -1,6 +1,6 @@
 /**
  * Full canary evaluation pipeline for ingested content.
- * ContentEnvelope → code tools → LLM evaluation → PipelineResult
+ * ContentEnvelope → code tools → pre-classify → LLM evaluation → PipelineResult
  *
  * This is the main entry point for evaluating ingested content.
  * It replaces direct use of evaluateContent() for structured content.
@@ -8,6 +8,8 @@
 
 import { log } from "../log.js";
 import { evaluateContent } from "./evaluate.js";
+import { preClassify } from "./pre-classify.js";
+import type { PreClassifyTier } from "./pre-classify.js";
 import { runCodeTools, prepareForLlm, formatForCanary } from "./prepare.js";
 import type { CodeEvaluation } from "./prepare.js";
 import type { EvaluationResult } from "./types.js";
@@ -26,6 +28,10 @@ export interface PipelineResult {
   sourceFitDelta: number;
   /** Auth score for email (0-1, undefined for non-email) */
   authScore?: number;
+  /** Pre-classifier tier (skip, trusted, full) */
+  preFilterTier: PreClassifyTier;
+  /** Pre-classifier reason */
+  preFilterReason: string;
   /** Canary LLM evaluation result */
   evaluation: EvaluationResult;
   /** Overall safe determination (code + LLM combined) */
@@ -38,9 +44,10 @@ export interface PipelineResult {
  * Run the full canary pipeline on ingested content.
  *
  * 1. Run code tools (deterministic signals from metadata)
- * 2. Prepare content for LLM (assemble signals + content blocks)
- * 3. Run canary LLM evaluation (regex pre-scan + LLM classification)
- * 4. Combine results
+ * 2. Pre-classify based on metadata (skip/trusted/full)
+ * 3. Prepare content for LLM (assemble signals + content blocks)
+ * 4. Run canary LLM evaluation (regex pre-scan + LLM classification)
+ * 5. Combine results
  */
 export async function evaluatePipeline(envelope: ContentEnvelope): Promise<PipelineResult> {
   const start = Date.now();
@@ -57,15 +64,66 @@ export async function evaluatePipeline(envelope: ContentEnvelope): Promise<Pipel
     authScore: codeEval.authScore,
   });
 
-  // Step 2: Prepare LLM payload
+  // Step 2: Pre-classify based on metadata
+  const preFilter = preClassify(envelope, codeEval);
+
+  if (preFilter.tier === "skip") {
+    log("canary", "pre-filter: skipping LLM", {
+      contentId: envelope.id,
+      sourceId: envelope.sourceId,
+      reason: preFilter.reason,
+    });
+
+    // Synthetic safe result — this is spam/noise, not a security threat.
+    // fitScore 0.0 because we have zero trust in the sender, but safe=true
+    // because unauthenticated spam can't contain effective prompt injection
+    // (it would need to reach the agent, which requires passing trust gates).
+    const evaluation: EvaluationResult = {
+      safe: true,
+      source: "pre-filter",
+      regexHits: [],
+      llmVerdict: null,
+      rawLlmResponse: null,
+      durationMs: Date.now() - start,
+      fitScore: 0.0,
+      observationScore: 1.0,
+      metrics: {
+        inputChars: 0, overheadChars: 0, outputChars: 0, ttftMs: 0,
+        inputTokens: 0, outputTokens: 0, totalTokens: 0, chunks: [],
+      },
+    };
+
+    return {
+      contentId: envelope.id,
+      sourceId: envelope.sourceId,
+      sourceFit: envelope.sourceFit,
+      codeSignals: codeEval.signals,
+      sourceFitDelta: codeEval.sourceFitDelta,
+      authScore: codeEval.authScore,
+      preFilterTier: preFilter.tier,
+      preFilterReason: preFilter.reason,
+      evaluation,
+      safe: true,
+      durationMs: Date.now() - start,
+    };
+  }
+
+  log("canary", "pre-filter tier", {
+    contentId: envelope.id,
+    sourceId: envelope.sourceId,
+    tier: preFilter.tier,
+    reason: preFilter.reason,
+  });
+
+  // Step 3: Prepare LLM payload
   const payload = prepareForLlm(envelope, codeEval);
   const canaryInput = formatForCanary(payload);
 
-  // Step 3: Run canary LLM (includes regex pre-scan)
+  // Step 4: Run canary LLM (includes regex pre-scan)
   // Pass content type so the right system prompt is used
   const evaluation = await evaluateContent(canaryInput, envelope.content.type);
 
-  // Step 4: Combine — content is unsafe if code tools found critical signals OR LLM says unsafe
+  // Step 5: Combine — content is unsafe if code tools found critical signals OR LLM says unsafe
   const criticalCodeSignals = codeEval.signals.filter(s => s.severity === "critical");
   const safe = evaluation.safe && criticalCodeSignals.length === 0;
 
@@ -76,6 +134,8 @@ export async function evaluatePipeline(envelope: ContentEnvelope): Promise<Pipel
     codeSignals: codeEval.signals,
     sourceFitDelta: codeEval.sourceFitDelta,
     authScore: codeEval.authScore,
+    preFilterTier: preFilter.tier,
+    preFilterReason: preFilter.reason,
     evaluation,
     safe,
     durationMs: Date.now() - start,
@@ -85,6 +145,7 @@ export async function evaluatePipeline(envelope: ContentEnvelope): Promise<Pipel
     contentId: envelope.id,
     sourceId: envelope.sourceId,
     safe: result.safe,
+    preFilterTier: preFilter.tier,
     codeSignals: codeEval.signals.length,
     fitScore: evaluation.fitScore,
     observationScore: evaluation.observationScore,

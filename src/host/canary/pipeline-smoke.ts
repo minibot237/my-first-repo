@@ -52,6 +52,7 @@ async function main() {
 function printResult(result: PipelineResult, label: string) {
   console.log(`\n  Source:     ${result.sourceId}`);
   console.log(`  SourceFit:  ${result.sourceFit}`);
+  console.log(`  PreFilter:  ${result.preFilterTier} (${result.preFilterReason})`);
   console.log(`  Safe:       ${result.safe}`);
   console.log(`  Duration:   ${result.durationMs}ms`);
 
