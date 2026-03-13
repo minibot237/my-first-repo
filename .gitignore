@@ -3,8 +3,7 @@ dist/
 *.sock
 .agents-global/
 .claude/settings.local.json
+.local/
 logs/
-test-data/
 .env
 .DS_Store
-tasks/

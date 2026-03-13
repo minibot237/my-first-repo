@@ -8,7 +8,7 @@
 
 import { log } from "../log.js";
 import { evaluateContent } from "./evaluate.js";
-import { preClassify } from "./pre-classify.js";
+import { preClassify, computeInitialFit } from "./pre-classify.js";
 import type { PreClassifyTier } from "./pre-classify.js";
 import { runCodeTools, prepareForLlm, formatForCanary } from "./prepare.js";
 import type { CodeEvaluation } from "./prepare.js";
@@ -32,6 +32,10 @@ export interface PipelineResult {
   preFilterTier: PreClassifyTier;
   /** Pre-classifier reason */
   preFilterReason: string;
+  /** Recommended initial fit for new sources (from pre-classifier metadata) */
+  initialFit: number;
+  /** Reason for initial fit value */
+  initialFitReason: string;
   /** Canary LLM evaluation result */
   evaluation: EvaluationResult;
   /** Overall safe determination (code + LLM combined) */
@@ -66,6 +70,7 @@ export async function evaluatePipeline(envelope: ContentEnvelope): Promise<Pipel
 
   // Step 2: Pre-classify based on metadata
   const preFilter = preClassify(envelope, codeEval);
+  const seedFit = computeInitialFit(preFilter.tier, codeEval.authScore ?? 0);
 
   if (preFilter.tier === "skip") {
     log("canary", "pre-filter: skipping LLM", {
@@ -102,6 +107,8 @@ export async function evaluatePipeline(envelope: ContentEnvelope): Promise<Pipel
       authScore: codeEval.authScore,
       preFilterTier: preFilter.tier,
       preFilterReason: preFilter.reason,
+      initialFit: seedFit.fit,
+      initialFitReason: seedFit.reason,
       evaluation,
       safe: true,
       durationMs: Date.now() - start,
@@ -136,6 +143,8 @@ export async function evaluatePipeline(envelope: ContentEnvelope): Promise<Pipel
     authScore: codeEval.authScore,
     preFilterTier: preFilter.tier,
     preFilterReason: preFilter.reason,
+    initialFit: seedFit.fit,
+    initialFitReason: seedFit.reason,
     evaluation,
     safe,
     durationMs: Date.now() - start,

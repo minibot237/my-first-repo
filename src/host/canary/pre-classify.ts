@@ -134,3 +134,21 @@ export function preClassify(
 
   return { tier: "full", reason: "default" };
 }
+
+/**
+ * Compute initial fit value for a new source based on pre-classify tier and auth.
+ * Never above 0.5 — you earn trust, you don't start with it.
+ */
+export function computeInitialFit(tier: PreClassifyTier, authScore: number): { fit: number; reason: string } {
+  switch (tier) {
+    case "skip":
+      return { fit: 0.1, reason: "no auth, untrusted sender" };
+    case "trusted":
+      return { fit: 0.4, reason: "authenticated, known ESP" };
+    case "full":
+      if (authScore > 0) {
+        return { fit: 0.3, reason: `partial auth (${authScore.toFixed(2)}), unknown sender type` };
+      }
+      return { fit: 0.2, reason: "no auth, unknown sender" };
+  }
+}

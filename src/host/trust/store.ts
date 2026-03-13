@@ -12,7 +12,7 @@ import {
   type TrustComponentType, type TrustEntry, type TrustChange, type TrustSnapshot,
 } from "./types.js";
 
-const DATA_DIR = path.join(process.cwd(), "data");
+const DATA_DIR = path.join(process.cwd(), ".local", "data");
 const STORE_PATH = path.join(DATA_DIR, "trust-store.json");
 const LOG_PATH = path.join(process.cwd(), "logs", "trust-changes.log");
 const RECENT_CHANGES_LIMIT = 50;
@@ -170,6 +170,50 @@ export class TrustStore {
     });
 
     return entry;
+  }
+
+  /** Seed initial fit for a new source. No-op if source already exists. */
+  seedIfNew(
+    sourceId: string,
+    componentType: TrustComponentType,
+    fitValue: number,
+    reason: string,
+  ): boolean {
+    if (this.entries.has(sourceId)) return false;
+
+    const clampedValue = Math.max(MIN_FIT, Math.min(MAX_FIT, fitValue));
+    const entry: TrustEntry = {
+      sourceId,
+      componentType,
+      fitValue: clampedValue,
+      createdAt: localTimestamp(),
+      updatedAt: localTimestamp(),
+      evaluationCount: 0,
+    };
+    this.entries.set(sourceId, entry);
+
+    const change: TrustChange = {
+      ts: localTimestamp(),
+      sourceId,
+      componentType,
+      previousFit: DEFAULT_FIT,
+      delta: clampedValue - DEFAULT_FIT,
+      newFit: clampedValue,
+      reason: `seed: ${reason}`,
+      contentId: null,
+    };
+
+    this.logChange(change);
+    this.save();
+    this.emitUpdate(entry, change);
+
+    log("trust seeded", {
+      sourceId,
+      fitValue: clampedValue.toFixed(2),
+      reason,
+    });
+
+    return true;
   }
 
   /** Snapshot for dashboard state_sync. */

@@ -23,7 +23,7 @@ interface SmokeData {
   emails: { account: string; file: string; sizeKB: number }[];
 }
 
-const DATA_FILE = resolve(process.cwd(), "test-data", "smoke-emails.json");
+const DATA_FILE = resolve(process.cwd(), ".local", "test-data", "smoke-emails.json");
 const data: SmokeData = JSON.parse(readFileSync(DATA_FILE, "utf-8"));
 
 const TEST_DIR = data.testDir.replace("~", process.env.HOME!);

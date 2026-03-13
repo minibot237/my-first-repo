@@ -26,7 +26,7 @@ Dashboard at http://localhost:9100
 - **Sessions** (`src/host/sessions/`) — persistent multi-turn chat sessions (coder/core/canary types)
 - **Ingest** (`src/host/ingest/`) — content ingestion pipelines (email, web) producing structured JSON envelopes
 - **Canary** (`src/host/canary/`) — content safety evaluation: code tools → LLM classification pipeline
-- **Trust** (`src/host/trust/`) — persistent fit_value store for source trustworthiness, file-backed in `data/`
+- **Trust** (`src/host/trust/`) — persistent fit_value store for source trustworthiness, file-backed in `.local/data/`
 
 ## Models (via Ollama)
 
