@@ -1,6 +1,6 @@
 /**
  * Code-based web content evaluation — deterministic signals from web metadata.
- * Spec: docs/content-vocabulary.md → Canary Tool Contracts → evaluateWebMeta
+ * Spec: .doc/content-vocabulary.md → Canary Tool Contracts → evaluateWebMeta
  */
 
 import type { WebContent } from "../ingest/types.js";

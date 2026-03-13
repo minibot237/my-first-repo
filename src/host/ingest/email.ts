@@ -1,6 +1,6 @@
 /**
  * Email ingestion — parse .eml files into ContentEnvelope.
- * Spec: docs/content-vocabulary.md
+ * Spec: .doc/content-vocabulary.md
  */
 
 import { readFile } from "node:fs/promises";

@@ -70,12 +70,12 @@ The container is belt-and-suspenders. The real containment is the code itself be
 
 ## Detailed Docs
 
-- `docs/content-vocabulary.md` — JSON vocabulary for content ingestion, canary tool contracts, trust store integration
-- `docs/email-ingest-findings.md` — batch run findings from 1521 real emails
-- `docs/supervisor-dashboard.md` — full dashboard design, future architecture vision, Canary VM concept
-- `docs/chat-sessions.md` — session abstraction, types vs backends, lifecycle, dashboard integration
-- `docs/progress-2026-03-08.md` — build log with technical details
-- `docs/container-runtimes.md` — runtime-specific notes (Apple Containers vs Docker)
-- `docs/agent-capabilities.md` — (planned) per-VM capability manifests, how supervisor shapes each agent's world view
-- `docs/progress-2026-03-11.md` — threat model brainstorm: injection paths, canary containment, coder-as-gatekeeper
-- `docs/task-core-model-eval.md` — CORE model eval results: gemma3:4b selected over 7 candidates
+- `.doc/content-vocabulary.md` — JSON vocabulary for content ingestion, canary tool contracts, trust store integration
+- `.doc/email-ingest-findings.md` — batch run findings from 1521 real emails
+- `.doc/supervisor-dashboard.md` — full dashboard design, future architecture vision, Canary VM concept
+- `.doc/chat-sessions.md` — session abstraction, types vs backends, lifecycle, dashboard integration
+- `.doc/progress-2026-03-08.md` — build log with technical details
+- `.doc/container-runtimes.md` — runtime-specific notes (Apple Containers vs Docker)
+- `.doc/agent-capabilities.md` — (planned) per-VM capability manifests, how supervisor shapes each agent's world view
+- `.doc/progress-2026-03-11.md` — threat model brainstorm: injection paths, canary containment, coder-as-gatekeeper
+- `.doc/task-core-model-eval.md` — CORE model eval results: gemma3:4b selected over 7 candidates
