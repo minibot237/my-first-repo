@@ -6,38 +6,57 @@ import type { EvaluationResult, EvalMetrics, ChunkMetrics, LlmVerdict } from "./
 
 // ── Load prompts from files ──────────────────────────────────────────
 
-const PROMPTS_DIR = resolve(process.cwd(), "src", "host", "canary", "prompts");
+const DEFAULT_PROMPTS_DIR = resolve(process.cwd(), "src", "host", "canary", "prompts");
 
 function loadPrompt(filename: string): string {
-  return readFileSync(resolve(PROMPTS_DIR, filename), "utf-8").trim();
+  const dir = CANARY_CONFIG.promptsDir ?? DEFAULT_PROMPTS_DIR;
+  return readFileSync(resolve(dir, filename), "utf-8").trim();
 }
 
-// Shared response format, injected into system prompts via {{response_format}}
-const RESPONSE_FORMAT = loadPrompt("response-format.txt");
-
-// System prompts per content type — fall back to default if type-specific doesn't exist
+// Prompt cache — keyed by promptsDir so swapping dir invalidates automatically
+let cachedPromptsDir: string | null = null;
+let cachedResponseFormat = "";
+let cachedUserTemplate = "";
 const systemPrompts: Record<string, string> = {};
 
+function ensurePromptsLoaded(): void {
+  const dir = CANARY_CONFIG.promptsDir ?? DEFAULT_PROMPTS_DIR;
+  if (dir === cachedPromptsDir) return;
+
+  // Clear cache and reload
+  cachedPromptsDir = dir;
+  cachedResponseFormat = loadPrompt("response-format.txt");
+  cachedUserTemplate = loadPrompt("user.txt");
+  for (const key of Object.keys(systemPrompts)) delete systemPrompts[key];
+}
+
 function getSystemPrompt(contentType: string = "default"): string {
+  ensurePromptsLoaded();
   if (!systemPrompts[contentType]) {
     try {
       const raw = loadPrompt(`system-${contentType}.txt`);
-      systemPrompts[contentType] = raw.replace("{{response_format}}", RESPONSE_FORMAT);
+      systemPrompts[contentType] = raw.replace("{{response_format}}", cachedResponseFormat);
     } catch {
       // Fall back to default
       if (contentType !== "default") return getSystemPrompt("default");
       const raw = loadPrompt("system.txt");
-      systemPrompts["default"] = raw.replace("{{response_format}}", RESPONSE_FORMAT);
+      systemPrompts["default"] = raw.replace("{{response_format}}", cachedResponseFormat);
     }
   }
   return systemPrompts[contentType];
 }
 
-const USER_TEMPLATE = loadPrompt("user.txt");
+function getUserTemplate(): string {
+  ensurePromptsLoaded();
+  return cachedUserTemplate;
+}
 
 // ── Canary config: all the knobs, switches, and sliders ──────────────
 
 export const CANARY_CONFIG = {
+  // Prompts directory — null = default (src/host/canary/prompts)
+  promptsDir: null as string | null,
+
   // LLM endpoint
   endpoint: "http://localhost:11434/v1/chat/completions",
   model: "qwen2.5:3b",
@@ -73,7 +92,7 @@ export const CANARY_CONFIG = {
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function buildUserMessage(content: string): string {
-  return USER_TEMPLATE.replace("{{content}}", content);
+  return getUserTemplate().replace("{{content}}", content);
 }
 
 /** Chars in the fixed framing (system prompt + user message wrapper, excluding content) */
@@ -343,7 +362,14 @@ function computeObservationScore(
   } else {
     try {
       const parsed = JSON.parse(jsonMatch[0]);
-      const expectedFields = ["safe", "flags", "confidence", "reasoning"];
+      // Check required fields based on what the response format asks for.
+      // "safe" is always required. Others are optional — only penalize if
+      // the response format mentions them but they're missing.
+      const responseFormat = cachedResponseFormat || "";
+      const expectedFields = ["safe"];
+      for (const f of ["flags", "confidence", "reasoning"]) {
+        if (responseFormat.includes(f)) expectedFields.push(f);
+      }
       let missing = 0;
       for (const f of expectedFields) {
         if (!(f in parsed)) missing++;
