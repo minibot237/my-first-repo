@@ -1,6 +1,6 @@
 /**
  * Code-based email envelope evaluation — deterministic signals from metadata.
- * Spec: .doc/content-vocabulary.md → Canary Tool Contracts → evaluateEnvelope
+ * Spec: .local/doc/content-vocabulary.md → Canary Tool Contracts → evaluateEnvelope
  */
 
 import type { EmailEnvelope } from "../ingest/types.js";

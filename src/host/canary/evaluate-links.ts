@@ -1,6 +1,6 @@
 /**
  * Code-based link evaluation — deterministic signals from URLs.
- * Spec: .doc/content-vocabulary.md → Canary Tool Contracts → evaluateLinks
+ * Spec: .local/doc/content-vocabulary.md → Canary Tool Contracts → evaluateLinks
  */
 
 import type { LinkPart } from "../ingest/types.js";

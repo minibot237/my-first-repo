@@ -1,6 +1,6 @@
 /**
  * Content Vocabulary — JSON types for the ingestion pipeline.
- * Spec: .doc/content-vocabulary.md
+ * Spec: .local/doc/content-vocabulary.md
  */
 
 // --- Top-level envelope ---

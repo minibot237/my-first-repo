@@ -1,7 +1,7 @@
 /**
  * Prepare ingested content for canary LLM evaluation.
  * Assembles code signals + content blocks into the LLM payload.
- * Spec: .doc/content-vocabulary.md → Canary Tool Contracts → prepareForLlm
+ * Spec: .local/doc/content-vocabulary.md → Canary Tool Contracts → prepareForLlm
  */
 
 import type {

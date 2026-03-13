@@ -1,6 +1,6 @@
 /**
  * Trust store types — fit_value tracking for content sources.
- * Spec: .doc/content-vocabulary.md (Trust Store Integration)
+ * Spec: .local/doc/content-vocabulary.md (Trust Store Integration)
  */
 
 // --- Constants ---

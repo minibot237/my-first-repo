@@ -1,6 +1,6 @@
 /**
  * Code-based attachment evaluation — deterministic signals from attachment metadata.
- * Spec: .doc/content-vocabulary.md → Canary Tool Contracts → evaluateAttachments
+ * Spec: .local/doc/content-vocabulary.md → Canary Tool Contracts → evaluateAttachments
  */
 
 import type { AttachmentPart } from "../ingest/types.js";

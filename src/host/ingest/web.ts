@@ -1,6 +1,6 @@
 /**
  * Web content ingestion — fetch URL and produce ContentEnvelope.
- * Spec: .doc/content-vocabulary.md
+ * Spec: .local/doc/content-vocabulary.md
  */
 
 import { randomUUID } from "node:crypto";
