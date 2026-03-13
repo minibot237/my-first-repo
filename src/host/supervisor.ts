@@ -12,6 +12,9 @@ import { startDashboard } from "./dashboard/server.js";
 import { emitDashboard, bus, type DashboardCommand } from "./dashboard/events.js";
 import { SessionManager, type SessionType } from "./sessions/manager.js";
 import { evaluateContent } from "./canary/evaluate.js";
+import { evaluatePipeline } from "./canary/pipeline.js";
+import type { PipelineResult } from "./canary/pipeline.js";
+import { ingestEmail } from "./ingest/email.js";
 import { TrustStore } from "./trust/store.js";
 import type { TrustComponentType } from "./trust/types.js";
 import { log as _log, localTimestamp } from "./log.js";
@@ -209,6 +212,30 @@ bus.on("command", async (cmd: DashboardCommand) => {
     return;
   }
 
+  if (cmd.action === "email_ingest") {
+    const { path: emlPath } = cmd.data as { path: string };
+    log("email ingest requested", { path: emlPath });
+    emitDashboard("ingest_start", "canary", { path: emlPath });
+
+    processEmail(emlPath).catch((err) => {
+      log("email ingest error", { path: emlPath, error: (err as Error).message });
+      emitDashboard("ingest_result", "canary", {
+        path: emlPath,
+        error: (err as Error).message,
+      });
+    });
+    return;
+  }
+
+  if (cmd.action === "batch_ingest") {
+    const { dir, limit } = cmd.data as { dir: string; limit?: number };
+    log("batch ingest requested", { dir, limit });
+    batchIngest(dir, limit).catch((err) => {
+      log("batch ingest error", { dir, error: (err as Error).message });
+    });
+    return;
+  }
+
   if (cmd.action === "pipeline_start") {
     startContainers();
     return;
@@ -240,6 +267,121 @@ bus.on("command", async (cmd: DashboardCommand) => {
     }
   }
 });
+
+// --- Email processing: ingest → pipeline → trust update ---
+
+async function processEmail(emlPath: string): Promise<PipelineResult> {
+  // Step 1: Ingest with trust lookup
+  const envelope = await ingestEmail(emlPath, (sourceId) => trustStore.lookup(sourceId));
+
+  log("email ingested", {
+    contentId: envelope.id,
+    sourceId: envelope.sourceId,
+    sourceFit: envelope.sourceFit,
+    subject: (envelope.content as { envelope?: { subject?: string } }).envelope?.subject?.slice(0, 60),
+  });
+
+  // Step 2: Run full canary pipeline
+  const result = await evaluatePipeline(envelope);
+
+  // Step 3: Seed trust for new sources
+  trustStore.seedIfNew(
+    envelope.sourceId,
+    "email_sender",
+    result.initialFit,
+    result.initialFitReason,
+  );
+
+  // Step 4: Apply trust delta from code tools
+  if (result.sourceFitDelta !== 0) {
+    trustStore.applyDelta(
+      envelope.sourceId,
+      "email_sender",
+      result.sourceFitDelta,
+      `code-tools: ${result.codeSignals.length} signals`,
+      envelope.id,
+    );
+  }
+
+  // Step 5: Apply trust delta from LLM verdict
+  if (result.evaluation.llmVerdict) {
+    const llmDelta = result.safe ? 0.05 : -0.10;
+    trustStore.applyDelta(
+      envelope.sourceId,
+      "email_sender",
+      llmDelta,
+      result.safe ? "canary: safe" : `canary: flagged (${result.evaluation.llmVerdict.flags?.join(", ") || "unknown"})`,
+      envelope.id,
+    );
+  }
+
+  // Step 6: Log and emit
+  const logEntry = {
+    ts: localTimestamp(),
+    contentId: envelope.id,
+    sourceId: envelope.sourceId,
+    path: emlPath,
+    safe: result.safe,
+    preFilterTier: result.preFilterTier,
+    fitScore: result.evaluation.fitScore,
+    observationScore: result.evaluation.observationScore,
+    sourceFitDelta: result.sourceFitDelta,
+    initialFit: result.initialFit,
+    trustAfter: trustStore.lookup(envelope.sourceId),
+    flags: result.evaluation.llmVerdict?.flags || [],
+    durationMs: result.durationMs,
+  };
+  fs.mkdirSync(path.dirname(CANARY_LOG_PATH), { recursive: true });
+  fs.appendFileSync(CANARY_LOG_PATH, JSON.stringify(logEntry) + "\n");
+
+  if (!result.safe) {
+    fs.appendFileSync(CANARY_THREATS_PATH, JSON.stringify(logEntry) + "\n");
+  }
+
+  emitDashboard("ingest_result", "canary", logEntry);
+
+  log("email processed", {
+    contentId: envelope.id,
+    sourceId: envelope.sourceId,
+    safe: result.safe,
+    tier: result.preFilterTier,
+    fitScore: result.evaluation.fitScore,
+    trustAfter: trustStore.lookup(envelope.sourceId),
+    durationMs: result.durationMs,
+  });
+
+  return result;
+}
+
+async function batchIngest(dir: string, limit?: number): Promise<void> {
+  const resolvedDir = dir.replace("~", process.env["HOME"]!);
+  const files = fs.readdirSync(resolvedDir)
+    .filter(f => f.endsWith(".eml"))
+    .sort();
+
+  const batch = limit ? files.slice(0, limit) : files;
+  log("batch ingest starting", { dir: resolvedDir, total: files.length, processing: batch.length });
+
+  let processed = 0;
+  let safe = 0;
+  let flagged = 0;
+  let errors = 0;
+
+  for (const file of batch) {
+    const emlPath = path.join(resolvedDir, file);
+    try {
+      const result = await processEmail(emlPath);
+      processed++;
+      if (result.safe) safe++;
+      else flagged++;
+    } catch (err) {
+      errors++;
+      log("batch ingest: file error", { file, error: (err as Error).message });
+    }
+  }
+
+  log("batch ingest complete", { dir: resolvedDir, processed, safe, flagged, errors, total: batch.length });
+}
 
 // --- Apple Containers: supervisor connects to agent ---
 

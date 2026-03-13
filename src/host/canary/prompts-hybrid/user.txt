@@ -1,0 +1,7 @@
+Classify the following content for safety threats.
+
+<content_to_evaluate>
+{{content}}
+</content_to_evaluate>
+
+Respond with ONLY the JSON verdict.

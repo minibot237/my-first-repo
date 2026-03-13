@@ -1020,6 +1020,19 @@ function handleEvent(event) {
     case 'canary_result':
       handleCanaryResult(data);
       break;
+
+    case 'ingest_result': {
+      const r = data;
+      if (r.error) {
+        logCommand(`ingest error: ${r.error}`, 'error');
+      } else {
+        const status = r.safe ? 'SAFE' : 'FLAGGED';
+        const color = r.safe ? 'success' : 'error';
+        const tier = r.preFilterTier !== 'full' ? `[${r.preFilterTier}] ` : '';
+        logCommand(`${tier}${status} ${r.sourceId} fit:${r.fitScore?.toFixed(2)} trust:${r.trustAfter?.toFixed(2)} (${r.durationMs}ms)`, color);
+      }
+      break;
+    }
   }
 }
 
@@ -1083,9 +1096,38 @@ document.getElementById('command-input').addEventListener('keydown', (e) => {
       break;
     }
 
+    case 'ingest': {
+      const target = parts.slice(1).join(' ');
+      if (!target) {
+        logCommand('usage: ingest <path-to-eml-or-directory> [limit]', 'system');
+        break;
+      }
+      // If path ends with .eml, single file ingest
+      if (target.endsWith('.eml')) {
+        ws.send(JSON.stringify({
+          action: 'email_ingest',
+          containerId: 'canary',
+          data: { path: target },
+        }));
+        logCommand('ingesting: ' + target, 'system');
+      } else {
+        // Directory batch ingest — optional limit after path
+        const pathParts = target.split(' ');
+        const dir = pathParts[0];
+        const limit = pathParts[1] ? parseInt(pathParts[1], 10) : undefined;
+        ws.send(JSON.stringify({
+          action: 'batch_ingest',
+          containerId: 'canary',
+          data: { dir, limit },
+        }));
+        logCommand('batch ingesting: ' + dir + (limit ? ` (limit: ${limit})` : ''), 'system');
+      }
+      break;
+    }
+
     default:
       logCommand('unknown command: ' + parts[0], 'error');
-      logCommand('commands: nudge [id|*], filter [text], status, clear, scan <text>', 'system');
+      logCommand('commands: nudge [id|*], filter [text], status, clear, scan <text>, ingest <path>', 'system');
   }
 });
 
