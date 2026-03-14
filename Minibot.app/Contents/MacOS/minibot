@@ -1,0 +1,15 @@
+#!/bin/bash
+# Minibot supervisor launcher
+# This wrapper gives node a stable macOS app identity (com.minibot.supervisor)
+# so TCC permissions (Full Disk Access, Local Network, etc.) persist across
+# node upgrades and restarts.
+
+# Resolve repo root: Minibot.app/Contents/MacOS/minibot → repo root
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+# Find node — prefer homebrew, fall back to PATH
+NODE="$(command -v node)"
+
+cd "$REPO_DIR"
+exec "$NODE" "$REPO_DIR/dist/host/supervisor.js"

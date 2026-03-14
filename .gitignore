@@ -7,3 +7,4 @@ dist/
 logs/
 .env
 .DS_Store
+Minibot.app/Contents/_CodeSignature/
