@@ -22,14 +22,122 @@
     height: 100vh;
   }
 
-  /* --- Left: Command Panel --- */
-  #command-panel {
+  /* --- Dock Layout --- */
+  .dock-side {
     display: flex;
     flex-direction: column;
-    width: 30%;
-    min-width: 120px;
     height: 100vh;
   }
+
+  #dock-left {
+    width: 30%;
+    min-width: 120px;
+  }
+
+  #dock-right {
+    flex: 1;
+    min-width: 200px;
+  }
+
+  .dock-group {
+    display: flex;
+    flex-direction: row;
+    flex: 1;
+    min-height: 60px;
+    overflow: hidden;
+  }
+
+  .dock-group.empty { display: none; }
+
+  /* Right dock: tab bar on right edge */
+  #dock-right .dock-group { flex-direction: row-reverse; }
+
+  .dock-tab-bar {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    width: 24px;
+    background: #16162a;
+    padding: 4px 0;
+  }
+
+  #dock-left .dock-tab-bar { border-right: 1px solid #333; }
+  #dock-right .dock-tab-bar { border-left: 1px solid #333; }
+
+  .dock-tab {
+    writing-mode: vertical-lr;
+    transform: rotate(180deg);
+    padding: 10px 4px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #555;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    white-space: nowrap;
+    user-select: none;
+    text-align: center;
+  }
+
+  #dock-right .dock-tab {
+    transform: none;
+    border-left: none;
+    border-right: 2px solid transparent;
+  }
+
+  .dock-tab:hover { color: #aaa; }
+
+  .dock-tab.active {
+    color: #c4b5fd;
+    border-left-color: #c4b5fd;
+  }
+
+  #dock-right .dock-tab.active {
+    border-left-color: transparent;
+    border-right-color: #c4b5fd;
+  }
+
+  .dock-group-content {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .panel {
+    display: none;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  .panel.active {
+    display: flex;
+  }
+
+  .dock-move-menu {
+    position: fixed;
+    background: #252540;
+    border: 1px solid #444;
+    border-radius: 6px;
+    padding: 4px 0;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    min-width: 160px;
+  }
+
+  .dock-move-menu-item {
+    padding: 6px 14px;
+    font-size: 12px;
+    color: #ccc;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .dock-move-menu-item:hover { background: #333; color: #fff; }
 
   #command-header {
     padding: 12px 16px;
@@ -109,6 +217,39 @@
   }
 
   #thread-list:empty { display: none; }
+
+  /* --- Schedule list --- */
+  #schedule-list {
+    border-bottom: 1px solid #333;
+    font-size: 12px;
+    max-height: 140px;
+    overflow-y: auto;
+  }
+
+  #schedule-list:empty { display: none; }
+
+  .schedule-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 16px;
+  }
+
+  .schedule-row:hover { background: #252540; }
+
+  .schedule-light {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .schedule-light.enabled { background: #4ade80; }
+  .schedule-light.disabled { background: #555; }
+
+  .schedule-action { color: #c4b5fd; min-width: 80px; }
+  .schedule-type { color: #666; min-width: 50px; }
+  .schedule-next { color: #555; margin-left: auto; font-variant-numeric: tabular-nums; }
 
   .thread-row {
     display: flex;
@@ -232,13 +373,11 @@
 
   .resize-v:hover, .resize-v.active { background: #555; }
 
-  /* --- Right: VM Panels --- */
+  /* --- VM Panels (inside containers panel) --- */
   #vm-panels {
     display: flex;
     flex-direction: column;
     flex: 1;
-    min-width: 200px;
-    height: 100vh;
     overflow-y: auto;
   }
 
@@ -410,22 +549,16 @@
   body.resizing *, body.resizing-v * { user-select: none !important; pointer-events: none !important; }
   body.resizing .resize-h, body.resizing-v .resize-v { pointer-events: auto !important; }
 
-  /* --- Supervisor Console (top of left panel) --- */
-  #supervisor-console {
-    display: flex;
-    flex-direction: column;
+  /* --- Console Panel --- */
+  #panel-console {
     flex: 1;
     min-height: 120px;
-    overflow: hidden;
   }
 
-  /* --- Chat Panel (bottom of left panel) --- */
-  #chat-panel {
-    display: flex;
-    flex-direction: column;
+  /* --- Chat Panel --- */
+  #panel-chat {
     flex: 1;
     min-height: 100px;
-    overflow: hidden;
   }
 
   #chat-tabs {
@@ -624,37 +757,63 @@
 </head>
 <body>
 <div id="app">
-  <div id="command-panel">
-    <div id="supervisor-console">
-      <div id="command-header">
-        <div><span>minibot</span> supervisor</div>
-        <div id="pipeline-controls">
-          <span id="pipeline-status" class="idle">idle</span>
-          <button id="supervisor-menu-btn">&#9662;</button>
+  <div id="dock-left" class="dock-side">
+    <div class="dock-group" id="dock-left-top">
+      <div class="dock-tab-bar"></div>
+      <div class="dock-group-content">
+        <div class="panel active" id="panel-console">
+          <div id="command-header">
+            <div><span>minibot</span> supervisor</div>
+            <div id="pipeline-controls">
+              <span id="pipeline-status" class="idle">idle</span>
+              <button id="supervisor-menu-btn">&#9662;</button>
+            </div>
+          </div>
+          <div id="thread-list"></div>
+          <div id="schedule-list"></div>
+          <div id="command-log"></div>
+          <div id="command-input-wrap">
+            <span>&gt;</span>
+            <input id="command-input" type="text" placeholder="nudge, filter, status, clear" autofocus>
+          </div>
+          <div id="connection-status" class="disconnected">disconnected</div>
         </div>
       </div>
-      <div id="thread-list"></div>
-      <div id="command-log"></div>
-      <div id="command-input-wrap">
-        <span>&gt;</span>
-        <input id="command-input" type="text" placeholder="nudge, filter, status, clear" autofocus>
-      </div>
-      <div id="connection-status" class="disconnected">disconnected</div>
     </div>
-    <div class="resize-v" id="left-panel-resize"></div>
-    <div id="chat-panel">
-      <div id="chat-tabs">
-        <div id="chat-tab-add">+</div>
-      </div>
-      <div id="chat-messages"></div>
-      <div id="chat-input-wrap">
-        <textarea id="chat-input" rows="1" placeholder="Send a message... (Enter to send, Shift+Enter for newline)"></textarea>
+    <div class="resize-v" id="left-dock-resize"></div>
+    <div class="dock-group" id="dock-left-bottom">
+      <div class="dock-tab-bar"></div>
+      <div class="dock-group-content">
+        <div class="panel active" id="panel-chat">
+          <div id="chat-tabs">
+            <div id="chat-tab-add">+</div>
+          </div>
+          <div id="chat-messages"></div>
+          <div id="chat-input-wrap">
+            <textarea id="chat-input" rows="1" placeholder="Send a message... (Enter to send, Shift+Enter for newline)"></textarea>
+          </div>
+        </div>
       </div>
     </div>
   </div>
   <div class="resize-h" id="main-resize"></div>
-  <div id="vm-panels">
-    <div id="no-vms">waiting for containers...</div>
+  <div id="dock-right" class="dock-side">
+    <div class="dock-group" id="dock-right-top">
+      <div class="dock-tab-bar"></div>
+      <div class="dock-group-content">
+        <div class="panel active" id="panel-containers">
+          <div id="vm-panels">
+            <div id="no-vms">waiting for containers...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="resize-v" id="right-dock-resize"></div>
+    <div class="dock-group" id="dock-right-bottom">
+      <div class="dock-tab-bar"></div>
+      <div class="dock-group-content">
+      </div>
+    </div>
   </div>
 </div>
 
@@ -662,6 +821,235 @@
 const vms = new Map();
 let ws;
 let filter = null;
+
+// --- Panel Manager ---
+
+const PanelManager = {
+  panels: new Map(),
+  groups: new Map(),
+  groupOrder: ['dock-left-top', 'dock-left-bottom', 'dock-right-top', 'dock-right-bottom'],
+  groupLabels: {
+    'dock-left-top': 'Left Top',
+    'dock-left-bottom': 'Left Bottom',
+    'dock-right-top': 'Right Top',
+    'dock-right-bottom': 'Right Bottom',
+  },
+
+  init() {
+    for (const id of this.groupOrder) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      this.groups.set(id, {
+        element: el,
+        tabBar: el.querySelector('.dock-tab-bar'),
+        content: el.querySelector('.dock-group-content'),
+        activePanel: null,
+        panels: [],
+      });
+    }
+  },
+
+  register(id, title, element, defaultGroup) {
+    this.panels.set(id, { id, title, element, group: defaultGroup });
+    const group = this.groups.get(defaultGroup);
+    if (group) {
+      group.panels.push(id);
+      if (!group.activePanel) {
+        group.activePanel = id;
+        element.classList.add('active');
+      }
+    }
+  },
+
+  activate(panelId) {
+    const panel = this.panels.get(panelId);
+    if (!panel) return;
+    const group = this.groups.get(panel.group);
+    if (!group) return;
+    if (group.activePanel && group.activePanel !== panelId) {
+      const prev = this.panels.get(group.activePanel);
+      if (prev) prev.element.classList.remove('active');
+    }
+    group.activePanel = panelId;
+    panel.element.classList.add('active');
+    this.renderTabs(panel.group);
+    this.saveLayout();
+  },
+
+  movePanel(panelId, toGroupId) {
+    const panel = this.panels.get(panelId);
+    if (!panel || panel.group === toGroupId) return;
+    const fromGroup = this.groups.get(panel.group);
+    const toGroup = this.groups.get(toGroupId);
+    if (!fromGroup || !toGroup) return;
+
+    // Remove from old group
+    fromGroup.panels = fromGroup.panels.filter(id => id !== panelId);
+    panel.element.classList.remove('active');
+    if (fromGroup.activePanel === panelId) {
+      fromGroup.activePanel = fromGroup.panels[0] || null;
+      if (fromGroup.activePanel) {
+        this.panels.get(fromGroup.activePanel).element.classList.add('active');
+      }
+    }
+
+    // Add to new group
+    panel.group = toGroupId;
+    toGroup.panels.push(panelId);
+    toGroup.content.appendChild(panel.element);
+
+    // Activate in new group
+    if (toGroup.activePanel) {
+      this.panels.get(toGroup.activePanel).element.classList.remove('active');
+    }
+    toGroup.activePanel = panelId;
+    panel.element.classList.add('active');
+
+    this.renderAllTabs();
+    this.updateGroupVisibility();
+    this.saveLayout();
+  },
+
+  renderAllTabs() {
+    for (const groupId of this.groups.keys()) {
+      this.renderTabs(groupId);
+    }
+    this.updateGroupVisibility();
+  },
+
+  renderTabs(groupId) {
+    const group = this.groups.get(groupId);
+    if (!group) return;
+
+    group.tabBar.innerHTML = group.panels.map(panelId => {
+      const panel = this.panels.get(panelId);
+      const active = group.activePanel === panelId ? ' active' : '';
+      return `<div class="dock-tab${active}" data-panel="${panelId}">${escHtml(panel.title)}</div>`;
+    }).join('');
+
+    group.tabBar.querySelectorAll('.dock-tab').forEach(tab => {
+      tab.addEventListener('click', () => this.activate(tab.dataset.panel));
+      tab.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        this.showMoveMenu(tab, tab.dataset.panel);
+      });
+    });
+  },
+
+  updateGroupVisibility() {
+    for (const [id, group] of this.groups) {
+      const isEmpty = group.panels.length === 0;
+      group.element.classList.toggle('empty', isEmpty);
+      // Hide adjacent resize handles when group is empty
+      const next = group.element.nextElementSibling;
+      if (next?.classList.contains('resize-v')) {
+        next.style.display = isEmpty ? 'none' : '';
+      }
+    }
+  },
+
+  showMoveMenu(anchorEl, panelId) {
+    document.querySelector('.dock-move-menu')?.remove();
+    const panel = this.panels.get(panelId);
+    if (!panel) return;
+
+    const menu = document.createElement('div');
+    menu.className = 'dock-move-menu';
+
+    for (const groupId of this.groupOrder) {
+      if (groupId === panel.group) continue;
+      const opt = document.createElement('div');
+      opt.className = 'dock-move-menu-item';
+      opt.textContent = 'Move to ' + this.groupLabels[groupId];
+      opt.addEventListener('click', () => {
+        this.movePanel(panelId, groupId);
+        menu.remove();
+      });
+      menu.appendChild(opt);
+    }
+
+    document.body.appendChild(menu);
+    const rect = anchorEl.getBoundingClientRect();
+    const menuW = menu.offsetWidth;
+    let left = rect.right + 2;
+    if (left + menuW > window.innerWidth) {
+      left = rect.left - menuW - 2;
+    }
+    menu.style.left = Math.max(0, left) + 'px';
+    menu.style.top = rect.top + 'px';
+
+    setTimeout(() => {
+      document.addEventListener('click', function handler(e) {
+        if (!menu.contains(e.target)) {
+          menu.remove();
+          document.removeEventListener('click', handler);
+        }
+      });
+    }, 0);
+  },
+
+  saveLayout() {
+    const layout = {};
+    for (const [groupId, group] of this.groups) {
+      layout[groupId] = { panels: [...group.panels], active: group.activePanel };
+    }
+    localStorage.setItem('minibot-dock-layout', JSON.stringify(layout));
+  },
+
+  restoreLayout() {
+    const saved = localStorage.getItem('minibot-dock-layout');
+    if (!saved) return false;
+
+    try {
+      const layout = JSON.parse(saved);
+
+      // Validate all saved panels exist and all registered panels are in layout
+      const allSaved = new Set();
+      for (const group of Object.values(layout)) {
+        for (const id of group.panels) {
+          if (!this.panels.has(id)) return false;
+          allSaved.add(id);
+        }
+      }
+      for (const id of this.panels.keys()) {
+        if (!allSaved.has(id)) return false;
+      }
+
+      // Clear all groups
+      for (const group of this.groups.values()) {
+        group.panels = [];
+        group.activePanel = null;
+      }
+
+      // Apply saved layout
+      for (const [groupId, groupLayout] of Object.entries(layout)) {
+        const group = this.groups.get(groupId);
+        if (!group) continue;
+
+        for (const panelId of groupLayout.panels) {
+          const panel = this.panels.get(panelId);
+          if (!panel) continue;
+          panel.group = groupId;
+          group.panels.push(panelId);
+          group.content.appendChild(panel.element);
+          panel.element.classList.remove('active');
+        }
+
+        if (groupLayout.active && this.panels.has(groupLayout.active)) {
+          group.activePanel = groupLayout.active;
+          this.panels.get(groupLayout.active).element.classList.add('active');
+        } else if (group.panels.length > 0) {
+          group.activePanel = group.panels[0];
+          this.panels.get(group.panels[0]).element.classList.add('active');
+        }
+      }
+
+      return true;
+    } catch {
+      return false;
+    }
+  },
+};
 
 function time(ts) {
   return new Date(ts).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
@@ -741,11 +1129,11 @@ function makeDragV(handle, getPanel) {
   });
 }
 
-// --- Main horizontal resize: command panel <-> vm panels ---
+// --- Main horizontal resize: left dock <-> right dock ---
 makeDragH(
   document.getElementById('main-resize'),
-  () => document.getElementById('command-panel'),
-  () => document.getElementById('vm-panels')
+  () => document.getElementById('dock-left'),
+  () => document.getElementById('dock-right')
 );
 
 // --- VM creation ---
@@ -1125,9 +1513,24 @@ document.getElementById('command-input').addEventListener('keydown', (e) => {
       break;
     }
 
+    case 'schedules':
+      if (scheduleData.length === 0) {
+        logCommand('no schedules', 'system');
+      } else {
+        for (const s of scheduleData) {
+          const status = s.enabled ? '✓' : '✗';
+          const type = s.type === 'interval'
+            ? `every ${Math.round((s.intervalMs || 0) / 60000)}m`
+            : s.cron || 'cron';
+          const next = s.nextRun ? ` → ${s.nextRun}` : '';
+          logCommand(`  ${status} ${s.action} [${type}]${next}`, 'system');
+        }
+      }
+      break;
+
     default:
       logCommand('unknown command: ' + parts[0], 'error');
-      logCommand('commands: nudge [id|*], filter [text], status, clear, scan <text>, ingest <path>', 'system');
+      logCommand('commands: nudge [id|*], filter [text], status, clear, scan <text>, ingest <path>, schedules', 'system');
   }
 });
 
@@ -1230,6 +1633,30 @@ setInterval(() => {
     renderChatTabs();
   }
 }, 250);
+
+// --- Schedules ---
+
+let scheduleData = [];
+
+function renderScheduleList() {
+  const el = document.getElementById('schedule-list');
+  if (scheduleData.length === 0) { el.innerHTML = ''; return; }
+
+  el.innerHTML = scheduleData.map(s => {
+    const lightCls = s.enabled ? 'enabled' : 'disabled';
+    const typeLabel = s.type === 'interval'
+      ? `every ${Math.round((s.intervalMs || 0) / 60000)}m`
+      : s.cron || 'cron';
+    const next = s.nextRun || '';
+    const lastMsg = s.lastResult?.message ? s.lastResult.message.slice(0, 40) : '';
+    return `<div class="schedule-row" title="${escHtml(lastMsg)}">` +
+      `<div class="schedule-light ${lightCls}"></div>` +
+      `<span class="schedule-action">${escHtml(s.action)}</span>` +
+      `<span class="schedule-type">${escHtml(typeLabel)}</span>` +
+      `<span class="schedule-next">${escHtml(next)}</span>` +
+      `</div>`;
+  }).join('');
+}
 
 function requestCreateSession(type) {
   ws.send(JSON.stringify({
@@ -1394,6 +1821,15 @@ function handleStateSync(data) {
 
   if (sessions.size > 0) {
     logCommand(`restored ${sessions.size} session(s)`, 'system');
+  }
+
+  // Restore schedules
+  if (data.schedules && Array.isArray(data.schedules)) {
+    scheduleData = data.schedules;
+    renderScheduleList();
+    if (scheduleData.length > 0) {
+      logCommand(`${scheduleData.length} schedule(s) active`, 'system');
+    }
   }
 }
 
@@ -1687,14 +2123,28 @@ document.getElementById('chat-input').addEventListener('keydown', (e) => {
   }
 });
 
-// Wire up left panel vertical resize
+// Wire up left dock vertical resize
 makeDragV(
-  document.getElementById('left-panel-resize'),
-  () => document.getElementById('supervisor-console')
+  document.getElementById('left-dock-resize'),
+  () => document.getElementById('dock-left-top')
+);
+
+// Wire up right dock vertical resize
+makeDragV(
+  document.getElementById('right-dock-resize'),
+  () => document.getElementById('dock-right-top')
 );
 
 // Initial render (empty state)
 renderChat();
+
+// --- Initialize Panel Manager ---
+PanelManager.init();
+PanelManager.register('console', 'Console', document.getElementById('panel-console'), 'dock-left-top');
+PanelManager.register('chat', 'Chat', document.getElementById('panel-chat'), 'dock-left-bottom');
+PanelManager.register('containers', 'Containers', document.getElementById('panel-containers'), 'dock-right-top');
+PanelManager.restoreLayout();
+PanelManager.renderAllTabs();
 
 connect();
 </script>
