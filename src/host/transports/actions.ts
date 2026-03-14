@@ -1,13 +1,14 @@
 import { log } from "../log.js";
 
-export interface ChatAction {
+/** A action payload: name + params. Source-agnostic — comes from classifier, scheduler, agent, or user. */
+export interface Action {
   action: string;
   [key: string]: unknown;
 }
 
 export interface ChatResponse {
   reply: string;
-  actions?: ChatAction[];
+  actions?: Action[];
 }
 
 export interface ActionDefinition {
@@ -15,13 +16,13 @@ export interface ActionDefinition {
   description: string;
   minTrust: number;
   schema: Record<string, string>;  // param name → description
-  handler: (params: ChatAction, context: ActionContext) => ActionResult;
+  handler: (params: Action, context: ActionContext) => ActionResult;
 }
 
 export interface ActionContext {
   identityId: string;
   trustLevel: number;
-  sessionId: string;
+  sessionId?: string;  // absent for Tier 1 direct actions (no session needed)
 }
 
 export interface ActionResult {
@@ -49,7 +50,7 @@ export class ActionRegistry {
   }
 
   /** Execute an action with trust validation */
-  execute(action: ChatAction, context: ActionContext): ActionResult {
+  execute(action: Action, context: ActionContext): ActionResult {
     const def = this.actions.get(action.action);
     if (!def) {
       log("actions", "unknown action", { action: action.action, identity: context.identityId });
@@ -99,7 +100,7 @@ export function parseChatResponse(raw: string): ChatResponse {
     const response: ChatResponse = { reply: parsed.reply };
     if (Array.isArray(parsed.actions)) {
       response.actions = parsed.actions.filter(
-        (a: unknown) => typeof a === "object" && a !== null && typeof (a as ChatAction).action === "string"
+        (a: unknown) => typeof a === "object" && a !== null && typeof (a as Action).action === "string"
       );
     }
     return response;

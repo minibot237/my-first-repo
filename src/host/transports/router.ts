@@ -2,12 +2,13 @@ import { log } from "../log.js";
 import { IdentityRegistry, type TransportIdentity } from "./identity.js";
 import {
   ActionRegistry, parseChatResponse,
-  type ActionContext, type ChatAction,
+  type ActionContext, type Action,
 } from "./actions.js";
 import {
   buildChatSystemPrompt, saveMode, listModes,
   DEFAULT_SESSION_CONFIG, type SessionConfig,
 } from "./prompt-builder.js";
+import { classifyMessage } from "./classifier.js";
 import type { Transport } from "./transport.js";
 import type { SessionManager } from "../sessions/manager.js";
 
@@ -74,6 +75,9 @@ export class TransportRouter {
   }
 
   private async handleIncoming(transportName: string, userId: string, text: string): Promise<void> {
+    const transport = this.transports.get(transportName);
+    if (!transport) return;
+
     // 1. Identity lookup
     const identity = this.identities.lookup(transportName, userId);
     if (!identity) {
@@ -81,24 +85,81 @@ export class TransportRouter {
       return;
     }
 
-    // 2. Find or create chat session
-    const chat = this.findOrCreateChat(identity, transportName);
+    // 2. Classify — Qwen decides the route before anything else happens
+    const availableActions = this.actions.forTrust(identity.trustLevel);
+    const classification = await classifyMessage(text, availableActions, identity.trustLevel);
 
-    // 3. Reset idle timer
-    this.resetIdleTimer(chat);
+    // Classifier failed (Ollama down, bad output) — fall back to CHAT
+    const route = classification?.route ?? "CHAT";
 
-    // 4. Send to session and collect response
     log("router", "incoming", {
       identity: identity.id,
-      mode: chat.config.mode,
+      route,
+      ...(classification?.action ? { action: classification.action } : {}),
+      ...(classification?.framing ? { framing: classification.framing } : {}),
       contentLength: text.length,
     });
 
-    // The session accumulates the full response via streaming.
-    // We need to capture it — send and then read the last assistant message.
+    // 3. Dispatch by route
+    if (route === "ACTION" && classification?.action) {
+      // Tier 1: Direct action — no Claude session needed
+      await this.dispatchAction(classification.action, classification.params ?? {}, identity, transport);
+      return;
+    }
+
+    if (route === "AGENT") {
+      // Tier 3: Agent — not yet implemented, fall back to CHAT
+      log("router", "agent route not yet implemented, falling back to chat", {
+        identity: identity.id,
+        framing: classification?.framing,
+      });
+    }
+
+    // Tier 2: Chat (also the fallback for AGENT and classifier failure)
+    await this.dispatchChat(identity, transportName, text);
+  }
+
+  /** Tier 1: Execute an action directly and send the result through the transport */
+  private async dispatchAction(
+    actionName: string,
+    params: Record<string, unknown>,
+    identity: TransportIdentity,
+    transport: Transport,
+  ): Promise<void> {
+    // Ensure a chat session exists — some actions need one (set_timeout, set_mode, etc.)
+    // If none exists, create it so the action can operate on it.
+    if (!this.chats.has(identity.id)) {
+      this.findOrCreateChat(identity, transport.name);
+    }
+
+    const action: Action = { action: actionName, ...params };
+    const context: ActionContext = {
+      identityId: identity.id,
+      trustLevel: identity.trustLevel,
+    };
+
+    const result = this.actions.execute(action, context);
+    log("router", "tier1 action", {
+      action: actionName,
+      ok: result.ok,
+      message: result.message,
+    });
+
+    const reply = result.message ?? (result.ok ? "Done." : "Action failed.");
+    await transport.send(identity.transportUserId, reply);
+  }
+
+  /** Tier 2: Route to a Claude chat session */
+  private async dispatchChat(
+    identity: TransportIdentity,
+    transportName: string,
+    text: string,
+  ): Promise<void> {
+    const chat = this.findOrCreateChat(identity, transportName);
+    this.resetIdleTimer(chat);
+
     const session = this.sessions.get(chat.sessionId);
     if (!session || session.state === "closed") {
-      // Session was closed externally — recreate
       const newChat = this.createChat(identity, transportName, chat.config);
       this.chats.set(identity.id, newChat);
       await this.sendAndReply(newChat, identity, transportName, text);
@@ -246,26 +307,79 @@ User message: ${text}`;
     return this.chats.get(identityId);
   }
 
+  private formatDuration(ms: number): string {
+    const mins = Math.round(ms / 60000);
+    if (mins < 60) return `${mins} minute${mins !== 1 ? "s" : ""}`;
+    const hrs = Math.floor(mins / 60);
+    const rem = mins % 60;
+    if (rem === 0) return `${hrs} hour${hrs !== 1 ? "s" : ""}`;
+    return `${hrs}h ${rem}m`;
+  }
+
   private registerBuiltinActions(): void {
+    // get_timeout — query current idle timeout
+    this.actions.register({
+      name: "get_timeout",
+      description: "Get the current idle timeout duration for this chat session.",
+      minTrust: 0.5,
+      schema: {},
+      handler: (_action, context) => {
+        const chat = this.getChat(context.identityId);
+        if (!chat) return { ok: true, message: "No active session. Default timeout is 4 hours." };
+        return { ok: true, message: `Session timeout is ${this.formatDuration(chat.config.idleTimeoutMs)}.` };
+      },
+    });
+
+    // get_time_left — how much idle time remains
+    this.actions.register({
+      name: "get_time_left",
+      description: "Get how much idle time remains before the current session expires.",
+      minTrust: 0.5,
+      schema: {},
+      handler: (_action, context) => {
+        const chat = this.getChat(context.identityId);
+        if (!chat) return { ok: true, message: "No active session." };
+        const elapsed = Date.now() - chat.lastMessageAt;
+        const remaining = Math.max(0, chat.config.idleTimeoutMs - elapsed);
+        if (remaining === 0) return { ok: true, message: "Session is about to expire." };
+        return { ok: true, message: `${this.formatDuration(remaining)} remaining before session expires.` };
+      },
+    });
+
+    // extend_timeout — reset the idle timer without changing the duration
+    this.actions.register({
+      name: "extend_timeout",
+      description: "Reset the idle timer, extending the session by the full timeout duration from now.",
+      minTrust: 0.5,
+      schema: {},
+      handler: (_action, context) => {
+        const chat = this.getChat(context.identityId);
+        if (!chat) return { ok: false, message: "No active session to extend." };
+        this.resetIdleTimer(chat);
+        return { ok: true, message: `Session extended. ${this.formatDuration(chat.config.idleTimeoutMs)} from now.` };
+      },
+    });
+
     // set_timeout — change idle timeout for current session
     this.actions.register({
       name: "set_timeout",
-      description: "Set the idle timeout for this chat session. After this many milliseconds of inactivity, the session closes and a new one starts on the next message.",
+      description: "Set the idle timeout duration. Use with a time value like '45 minutes' or '4 hours'.",
       minTrust: 1.0,
       schema: {
-        value: "timeout in milliseconds (e.g. 14400000 for 4 hours)",
+        value: "timeout in minutes (e.g. 45 for 45 minutes, 240 for 4 hours)",
       },
       handler: (action, context) => {
-        const value = Number(action.value);
-        if (!value || value < 60000) {
-          return { ok: false, message: "Timeout must be at least 60 seconds" };
+        const minutes = Number(action.value);
+        if (!minutes || minutes < 1) {
+          return { ok: false, message: "Timeout must be at least 1 minute" };
         }
+        const value = minutes * 60000;
         const chat = this.getChat(context.identityId);
         if (!chat) return { ok: false, message: "No active chat" };
         chat.config.idleTimeoutMs = value;
         this.resetIdleTimer(chat);
         log("router", "timeout updated", { identity: context.identityId, timeoutMs: value });
-        return { ok: true, message: `Timeout set to ${Math.round(value / 60000)} minutes` };
+        return { ok: true, message: `Timeout set to ${this.formatDuration(value)}.` };
       },
     });
 

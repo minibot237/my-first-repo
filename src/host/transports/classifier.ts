@@ -48,8 +48,8 @@ Available actions:
 ${actionList}
 
 RULES:
-1. ACTION — the message matches one of the actions above. Extract action name and params.
-2. CHAT — greeting, small talk, simple question answerable without tools. "Hey" "Tell me a joke" "What can you do?"
+1. ACTION — the message matches one of the available actions above. This includes both commands ("set timeout to 45 minutes") AND queries ("what is the timeout?", "how much time is left?") — if there's a matching action, use it. Extract action name and params.
+2. CHAT — greeting, small talk, or questions that don't match any action. "Hey" "Tell me a joke" "What can you do?"
 3. AGENT — needs tools, commands, file access, web search, or real work. Pick a framing:
    - "tool_builder" — user wants a REPEATING capability built (e.g. "build me a weather tool", "make a status checker")
    - "tech_chat" — about THIS SYSTEM's code, logs, config, architecture (e.g. "check the logs", "what's disk usage", "how does the canary work")
@@ -58,7 +58,10 @@ RULES:
 Respond with exactly one JSON object on a single line. No other text.
 
 Examples:
-{"route":"ACTION","action":"set_timeout","params":{"value":14400000}}
+{"route":"ACTION","action":"set_timeout","params":{"value":45}}
+{"route":"ACTION","action":"get_timeout"}
+{"route":"ACTION","action":"get_time_left"}
+{"route":"ACTION","action":"extend_timeout"}
 {"route":"CHAT"}
 {"route":"AGENT","framing":"tool_builder"}
 {"route":"AGENT","framing":"tech_chat"}
@@ -71,8 +74,8 @@ Available actions:
 ${actionList}
 
 RULES:
-1. ACTION — the message matches one of the actions above. Extract action name and params.
-2. CHAT — everything else. Greetings, questions, requests. All non-action messages are CHAT.
+1. ACTION — the message matches one of the available actions above. This includes both commands ("set reply length to 200") AND queries ("what is the reply length?") — if there's a matching action, use it. Extract action name and params.
+2. CHAT — everything else. Greetings, questions, requests that don't match any action.
 
 You can ONLY use ACTION or CHAT. No other routes exist.
 

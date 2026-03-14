@@ -14,7 +14,7 @@ const TEST_ACTIONS: ActionDefinition[] = [
     name: "set_timeout",
     description: "Set the idle timeout for this chat session",
     minTrust: 1.0,
-    schema: { value: "timeout in milliseconds (e.g. 14400000 for 4 hours)" },
+    schema: { value: "timeout in minutes (e.g. 45 for 45 minutes, 240 for 4 hours)" },
     handler: () => ({ ok: true }),
   },
   {
@@ -38,6 +38,27 @@ const TEST_ACTIONS: ActionDefinition[] = [
     schema: { name: "mode name", prompt: "the full prompt text for this mode" },
     handler: () => ({ ok: true }),
   },
+  {
+    name: "get_timeout",
+    description: "Get the current idle timeout duration for this chat session.",
+    minTrust: 0.5,
+    schema: {},
+    handler: () => ({ ok: true }),
+  },
+  {
+    name: "get_time_left",
+    description: "Get how much idle time remains before the current session expires.",
+    minTrust: 0.5,
+    schema: {},
+    handler: () => ({ ok: true }),
+  },
+  {
+    name: "extend_timeout",
+    description: "Reset the idle timer, extending the session by the full timeout duration from now.",
+    minTrust: 0.5,
+    schema: {},
+    handler: () => ({ ok: true }),
+  },
 ];
 
 interface TestCase {
@@ -54,7 +75,14 @@ const TEST_CASES: TestCase[] = [
   { message: "Make replies shorter, like 200 chars", expectedRoute: "ACTION", expectedAction: "set_reply_length" },
   { message: "Switch to root mode", expectedRoute: "ACTION", expectedAction: "set_mode" },
 
+  // Tier 1: ACTION — query actions (new)
+  { message: "What is the session timeout?", expectedRoute: "ACTION", expectedAction: "get_timeout" },
+  { message: "How much time is left?", expectedRoute: "ACTION", expectedAction: "get_time_left" },
+  { message: "Extend the session", expectedRoute: "ACTION", expectedAction: "extend_timeout" },
+  { message: "Set timeout to 45 minutes", expectedRoute: "ACTION", expectedAction: "set_timeout" },
+
   // Tier 2: CHAT — conversational, no tools needed
+  { message: "Hey", expectedRoute: "CHAT" },
   { message: "Hey, how's it going?", expectedRoute: "CHAT" },
   { message: "What can you do?", expectedRoute: "CHAT" },
   { message: "Tell me a joke", expectedRoute: "CHAT" },
