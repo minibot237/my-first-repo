@@ -14,7 +14,7 @@ export interface DashboardEvent {
 }
 
 export interface DashboardCommand {
-  action: "nudge" | "stop" | "session_create" | "session_send" | "session_close" | "session_clear_all" | "pipeline_start" | "supervisor_restart" | "clear_logs" | "canary_evaluate" | "trust_query" | "trust_override" | "email_ingest" | "batch_ingest";
+  action: "nudge" | "stop" | "session_create" | "session_send" | "session_close" | "session_clear_all" | "pipeline_start" | "supervisor_restart" | "clear_logs" | "canary_evaluate" | "trust_query" | "trust_override" | "trust_list" | "email_ingest" | "batch_ingest";
   containerId: string;
   data?: unknown;
 }

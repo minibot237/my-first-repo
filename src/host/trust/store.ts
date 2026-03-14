@@ -9,7 +9,7 @@ import { localTimestamp, log as _log } from "../log.js";
 import { emitDashboard } from "../dashboard/events.js";
 import {
   DEFAULT_FIT, MAX_FIT, MIN_FIT, MAX_DELTA,
-  type TrustComponentType, type TrustEntry, type TrustChange, type TrustSnapshot,
+  type TrustComponentType, type TrustList, type TrustEntry, type TrustChange, type TrustSnapshot,
 } from "./types.js";
 
 const DATA_DIR = path.join(process.cwd(), ".local", "data");
@@ -37,6 +37,8 @@ export class TrustStore {
         const raw = fs.readFileSync(STORE_PATH, "utf-8");
         const data = JSON.parse(raw) as Record<string, TrustEntry>;
         for (const [key, entry] of Object.entries(data)) {
+          // Backfill list field for entries created before trust lists
+          if (entry.list === undefined) entry.list = null;
           this.entries.set(key, entry);
         }
         log("loaded trust store", { entries: this.entries.size });
@@ -64,7 +66,7 @@ export class TrustStore {
     return [...this.entries.values()];
   }
 
-  /** Apply a bounded delta to a source's trust score. */
+  /** Apply a bounded delta to a source's trust score. No-op for blocked sources. */
   applyDelta(
     sourceId: string,
     componentType: TrustComponentType,
@@ -72,16 +74,24 @@ export class TrustStore {
     reason: string,
     contentId?: string,
   ): TrustEntry {
+    // Blocked sources have pinned fit — don't move them
+    const existing = this.entries.get(sourceId);
+    if (existing?.list === "block") {
+      log("applyDelta skipped (blocked)", { sourceId, delta });
+      return existing;
+    }
+
     // Clamp delta
     const clampedDelta = Math.max(-MAX_DELTA, Math.min(MAX_DELTA, delta));
 
     // Get or create entry
-    let entry = this.entries.get(sourceId);
+    let entry = existing;
     if (!entry) {
       entry = {
         sourceId,
         componentType,
         fitValue: DEFAULT_FIT,
+        list: null,
         createdAt: localTimestamp(),
         updatedAt: localTimestamp(),
         evaluationCount: 0,
@@ -137,6 +147,7 @@ export class TrustStore {
         sourceId,
         componentType,
         fitValue: clampedValue,
+        list: null,
         createdAt: localTimestamp(),
         updatedAt: localTimestamp(),
         evaluationCount: 0,
@@ -186,6 +197,7 @@ export class TrustStore {
       sourceId,
       componentType,
       fitValue: clampedValue,
+      list: null,
       createdAt: localTimestamp(),
       updatedAt: localTimestamp(),
       evaluationCount: 0,
@@ -214,6 +226,60 @@ export class TrustStore {
     });
 
     return true;
+  }
+
+  /** Set or clear list designation for a source. Block pins fit to 0.0. */
+  setList(
+    sourceId: string,
+    componentType: TrustComponentType,
+    list: TrustList | null,
+    reason: string,
+  ): TrustEntry {
+    let entry = this.entries.get(sourceId);
+    const previousFit = entry?.fitValue ?? DEFAULT_FIT;
+
+    if (!entry) {
+      entry = {
+        sourceId,
+        componentType,
+        fitValue: list === "block" ? MIN_FIT : DEFAULT_FIT,
+        list,
+        createdAt: localTimestamp(),
+        updatedAt: localTimestamp(),
+        evaluationCount: 0,
+      };
+      this.entries.set(sourceId, entry);
+    } else {
+      entry.list = list;
+      entry.updatedAt = localTimestamp();
+      if (list === "block") {
+        entry.fitValue = MIN_FIT;
+      }
+    }
+
+    const change: TrustChange = {
+      ts: localTimestamp(),
+      sourceId,
+      componentType,
+      previousFit,
+      delta: entry.fitValue - previousFit,
+      newFit: entry.fitValue,
+      reason: `list ${list ?? "clear"}: ${reason}`,
+      contentId: null,
+    };
+
+    this.logChange(change);
+    this.save();
+    this.emitUpdate(entry, change);
+
+    log("trust list changed", {
+      sourceId,
+      list: list ?? "cleared",
+      fitValue: entry.fitValue.toFixed(2),
+      reason,
+    });
+
+    return entry;
   }
 
   /** Snapshot for dashboard state_sync. */

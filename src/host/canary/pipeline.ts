@@ -14,6 +14,7 @@ import { runCodeTools, prepareForLlm, formatForCanary } from "./prepare.js";
 import type { CodeEvaluation } from "./prepare.js";
 import type { EvaluationResult } from "./types.js";
 import type { ContentEnvelope, Signal } from "../ingest/types.js";
+import type { TrustList } from "../trust/types.js";
 
 export interface PipelineResult {
   /** Content envelope ID */
@@ -22,13 +23,15 @@ export interface PipelineResult {
   sourceId: string;
   /** Current source trust score (from envelope) */
   sourceFit: number;
+  /** Trust store list designation (known/block/null) */
+  list: TrustList | null;
   /** Code tool signals */
   codeSignals: Signal[];
   /** Recommended source trust delta from code tools */
   sourceFitDelta: number;
   /** Auth score for email (0-1, undefined for non-email) */
   authScore?: number;
-  /** Pre-classifier tier (skip, trusted, full) */
+  /** Pre-classifier tier (skip, block, known, trusted, full) */
   preFilterTier: PreClassifyTier;
   /** Pre-classifier reason */
   preFilterReason: string;
@@ -53,25 +56,72 @@ export interface PipelineResult {
  * 4. Run canary LLM evaluation (regex pre-scan + LLM classification)
  * 5. Combine results
  */
-export async function evaluatePipeline(envelope: ContentEnvelope): Promise<PipelineResult> {
+export async function evaluatePipeline(
+  envelope: ContentEnvelope,
+  list?: TrustList | null,
+): Promise<PipelineResult> {
   const start = Date.now();
+  const sourceList = list ?? null;
 
-  // Step 1: Code tools
+  // Step 1: Code tools (always run — even for known contacts, auth checks catch spoofs)
   const codeEval = runCodeTools(envelope);
 
   log("canary", "code tools complete", {
     contentId: envelope.id,
     sourceId: envelope.sourceId,
+    list: sourceList,
     signalCount: codeEval.signals.length,
     highSeverity: codeEval.signals.filter(s => s.severity === "high" || s.severity === "critical").length,
     sourceFitDelta: codeEval.sourceFitDelta,
     authScore: codeEval.authScore,
   });
 
-  // Step 2: Pre-classify based on metadata
-  const preFilter = preClassify(envelope, codeEval);
+  // Step 2: Pre-classify based on metadata + trust list
+  const preFilter = preClassify(envelope, codeEval, sourceList);
   const seedFit = computeInitialFit(preFilter.tier, codeEval.authScore ?? 0);
 
+  // --- Block tier: rejected by supervisor, no LLM ---
+  if (preFilter.tier === "block") {
+    log("canary", "pre-filter: blocked", {
+      contentId: envelope.id,
+      sourceId: envelope.sourceId,
+      reason: preFilter.reason,
+    });
+
+    const evaluation: EvaluationResult = {
+      safe: false,
+      source: "pre-filter",
+      regexHits: [],
+      llmVerdict: null,
+      rawLlmResponse: null,
+      durationMs: Date.now() - start,
+      fitScore: 0.0,
+      observationScore: 1.0,
+      metrics: {
+        inputChars: 0, overheadChars: 0, outputChars: 0, ttftMs: 0,
+        inputTokens: 0, outputTokens: 0, totalTokens: 0, chunks: [],
+      },
+    };
+
+    return {
+      contentId: envelope.id,
+      sourceId: envelope.sourceId,
+      sourceFit: envelope.sourceFit,
+      list: sourceList,
+      codeSignals: codeEval.signals,
+      sourceFitDelta: codeEval.sourceFitDelta,
+      authScore: codeEval.authScore,
+      preFilterTier: preFilter.tier,
+      preFilterReason: preFilter.reason,
+      initialFit: seedFit.fit,
+      initialFitReason: seedFit.reason,
+      evaluation,
+      safe: false,
+      durationMs: Date.now() - start,
+    };
+  }
+
+  // --- Skip tier: spam/noise, no LLM ---
   if (preFilter.tier === "skip") {
     log("canary", "pre-filter: skipping LLM", {
       contentId: envelope.id,
@@ -79,10 +129,6 @@ export async function evaluatePipeline(envelope: ContentEnvelope): Promise<Pipel
       reason: preFilter.reason,
     });
 
-    // Synthetic safe result — this is spam/noise, not a security threat.
-    // fitScore 0.0 because we have zero trust in the sender, but safe=true
-    // because unauthenticated spam can't contain effective prompt injection
-    // (it would need to reach the agent, which requires passing trust gates).
     const evaluation: EvaluationResult = {
       safe: true,
       source: "pre-filter",
@@ -102,6 +148,7 @@ export async function evaluatePipeline(envelope: ContentEnvelope): Promise<Pipel
       contentId: envelope.id,
       sourceId: envelope.sourceId,
       sourceFit: envelope.sourceFit,
+      list: sourceList,
       codeSignals: codeEval.signals,
       sourceFitDelta: codeEval.sourceFitDelta,
       authScore: codeEval.authScore,
@@ -127,8 +174,12 @@ export async function evaluatePipeline(envelope: ContentEnvelope): Promise<Pipel
   const canaryInput = formatForCanary(payload);
 
   // Step 4: Run canary LLM (includes regex pre-scan)
-  // Pass content type so the right system prompt is used
-  const evaluation = await evaluateContent(canaryInput, envelope.content.type);
+  // Known contacts get the spoof-detection prompt (email-known),
+  // everyone else gets the standard content-type prompt (email, web, etc.)
+  const promptType = sourceList === "known" && envelope.content.type === "email"
+    ? "email-known"
+    : envelope.content.type;
+  const evaluation = await evaluateContent(canaryInput, promptType);
 
   // Step 5: Combine — content is unsafe if code tools found critical signals OR LLM says unsafe
   const criticalCodeSignals = codeEval.signals.filter(s => s.severity === "critical");
@@ -138,6 +189,7 @@ export async function evaluatePipeline(envelope: ContentEnvelope): Promise<Pipel
     contentId: envelope.id,
     sourceId: envelope.sourceId,
     sourceFit: envelope.sourceFit,
+    list: sourceList,
     codeSignals: codeEval.signals,
     sourceFitDelta: codeEval.sourceFitDelta,
     authScore: codeEval.authScore,
@@ -153,6 +205,7 @@ export async function evaluatePipeline(envelope: ContentEnvelope): Promise<Pipel
   log("canary", "pipeline complete", {
     contentId: envelope.id,
     sourceId: envelope.sourceId,
+    list: sourceList,
     safe: result.safe,
     preFilterTier: preFilter.tier,
     codeSignals: codeEval.signals.length,

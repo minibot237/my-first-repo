@@ -442,6 +442,33 @@ From the trust spec, adapted for minibot:
 | 0.9 | Maximum earned trust. Consistent good history. |
 | 1.0 | Reserved. Cryptographic verification only. Not achievable through behavior. |
 
+### Trust Lists (known / block)
+
+Supervisor-managed source classification via the `list` field on `TrustEntry`:
+
+| List | Meaning | Pipeline behavior |
+|------|---------|------------------|
+| `null` | Normal source | Standard pipeline (code tools → pre-classify → LLM) |
+| `"known"` | Personal contact | Full pipeline runs, but LLM uses **spoof-detection prompt** (`system-email-known.txt`). Flags on known contacts are high-priority — possible account compromise. |
+| `"block"` | Rejected source | Pre-classifier returns immediately with `safe: false`. No LLM, no compute. Fit pinned at 0.0, `applyDelta()` is a no-op. |
+
+**Key design principle:** `known` does NOT mean "trust more, check less." It means "check differently." A friend's account is a higher-value spoofing target. The known-contact prompt is tuned for:
+- Spoof detection (auth failures on a sender that normally passes)
+- Tone shifts (formal/templated language from a casual contact)
+- Out-of-character urgency (click this link, open this attachment)
+- Injection attempts (compromised accounts get weaponized)
+- Casual language, profanity, slang — all normal for personal contacts
+
+**Dashboard commands:**
+- `trust_list { sourceId, componentType, list: "known" | "block" | null, reason }` — set or clear list designation
+- List status included in `state_sync` snapshot and `trust_update` events
+
+**Rules:**
+- Only the supervisor (human) sets list designations — the pipeline never does
+- Trust scores still move normally for known contacts (the list affects *how* content is evaluated, not *whether*)
+- Blocked sources log to `canary-threats.log`
+- Prompt file: `src/host/canary/prompts/system-email-known.txt`
+
 ---
 
 ## Evolution

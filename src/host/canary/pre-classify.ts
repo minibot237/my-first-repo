@@ -12,8 +12,9 @@
 
 import type { ContentEnvelope, EmailContent } from "../ingest/types.js";
 import type { CodeEvaluation } from "./prepare.js";
+import type { TrustList } from "../trust/types.js";
 
-export type PreClassifyTier = "skip" | "trusted" | "full";
+export type PreClassifyTier = "skip" | "block" | "known" | "trusted" | "full";
 
 export interface PreClassifyResult {
   tier: PreClassifyTier;
@@ -93,12 +94,23 @@ function domainOf(address: string): string {
 
 /**
  * Classify content into a pre-filter tier based on metadata.
- * Only applies to email content — web and other types go straight to full eval.
+ * Trust store list overrides take priority, then email-specific heuristics.
  */
 export function preClassify(
   envelope: ContentEnvelope,
   codeEval: CodeEvaluation,
+  list?: TrustList | null,
 ): PreClassifyResult {
+  // --- Trust store list overrides (any content type) ---
+
+  if (list === "block") {
+    return { tier: "block", reason: `blocked by supervisor` };
+  }
+
+  if (list === "known") {
+    return { tier: "known", reason: `known contact` };
+  }
+
   // Only email has auth scores and sender metadata
   if (envelope.content.type !== "email") {
     return { tier: "full", reason: "non-email content" };
@@ -141,8 +153,12 @@ export function preClassify(
  */
 export function computeInitialFit(tier: PreClassifyTier, authScore: number): { fit: number; reason: string } {
   switch (tier) {
+    case "block":
+      return { fit: 0.0, reason: "blocked by supervisor" };
     case "skip":
       return { fit: 0.1, reason: "no auth, untrusted sender" };
+    case "known":
+      return { fit: 0.5, reason: "known contact (supervisor)" };
     case "trusted":
       return { fit: 0.4, reason: "authenticated, known ESP" };
     case "full":

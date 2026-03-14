@@ -14,11 +14,16 @@ export const MAX_DELTA = 0.15;
 
 export type TrustComponentType = "email_sender" | "email_domain" | "web_domain" | "session";
 
+/** Supervisor-managed source classification */
+export type TrustList = "known" | "block";
+
 /** A single source's trust record */
 export interface TrustEntry {
   sourceId: string;
   componentType: TrustComponentType;
   fitValue: number;
+  /** Supervisor-managed list: "known" (personal contact), "block" (reject), or null (normal) */
+  list: TrustList | null;
   createdAt: string;
   updatedAt: string;
   evaluationCount: number;

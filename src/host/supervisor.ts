@@ -16,7 +16,7 @@ import { evaluatePipeline } from "./canary/pipeline.js";
 import type { PipelineResult } from "./canary/pipeline.js";
 import { ingestEmail } from "./ingest/email.js";
 import { TrustStore } from "./trust/store.js";
-import type { TrustComponentType } from "./trust/types.js";
+import type { TrustComponentType, TrustList } from "./trust/types.js";
 import { log as _log, localTimestamp } from "./log.js";
 
 const RUNTIME = process.env["RUNTIME"] || "apple-containers";
@@ -212,6 +212,14 @@ bus.on("command", async (cmd: DashboardCommand) => {
     return;
   }
 
+  if (cmd.action === "trust_list") {
+    const { sourceId, componentType, list, reason } = cmd.data as {
+      sourceId: string; componentType: TrustComponentType; list: TrustList | null; reason: string;
+    };
+    trustStore.setList(sourceId, componentType, list, reason);
+    return;
+  }
+
   if (cmd.action === "email_ingest") {
     const { path: emlPath } = cmd.data as { path: string };
     log("email ingest requested", { path: emlPath });
@@ -281,8 +289,9 @@ async function processEmail(emlPath: string): Promise<PipelineResult> {
     subject: (envelope.content as { envelope?: { subject?: string } }).envelope?.subject?.slice(0, 60),
   });
 
-  // Step 2: Run full canary pipeline
-  const result = await evaluatePipeline(envelope);
+  // Step 2: Run full canary pipeline (pass trust list for prompt routing)
+  const trustEntry = trustStore.get(envelope.sourceId);
+  const result = await evaluatePipeline(envelope, trustEntry?.list);
 
   // Step 3: Seed trust for new sources
   trustStore.seedIfNew(
