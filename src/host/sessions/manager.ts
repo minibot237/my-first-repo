@@ -4,7 +4,7 @@ import { streamChatCompletion, type ChatMessage, type HttpBackendConfig } from "
 import { ClaudeSession, type ProcessBackendConfig } from "./process-backend.js";
 import { localTimestamp, SessionLog, log as slog } from "../log.js";
 
-export type SessionType = "coder" | "core" | "canary";
+export type SessionType = "coder" | "core" | "canary" | "chat";
 export type SessionState = "active" | "closed";
 
 export interface SessionBackendInfo {
@@ -39,6 +39,10 @@ const BACKEND_CONFIGS: Record<SessionType, BackendConfig> = {
     stream: true,
   },
   coder: {
+    kind: "process",
+    model: "claude-sonnet-4-6",
+  },
+  chat: {
     kind: "process",
     model: "claude-sonnet-4-6",
   },

@@ -18,6 +18,10 @@ import { ingestEmail } from "./ingest/email.js";
 import { TrustStore } from "./trust/store.js";
 import type { TrustComponentType, TrustList } from "./trust/types.js";
 import { log as _log, localTimestamp } from "./log.js";
+import { IdentityRegistry } from "./transports/identity.js";
+import { ActionRegistry } from "./transports/actions.js";
+import { TransportRouter } from "./transports/router.js";
+import { TelegramTransport } from "./transports/telegram.js";
 
 const RUNTIME = process.env["RUNTIME"] || "apple-containers";
 const CANARY_LOG_PATH = path.join(process.cwd(), "logs", "canary-evaluations.log");
@@ -76,6 +80,21 @@ const sessionManager = new SessionManager();
 
 // --- Trust store ---
 const trustStore = new TrustStore();
+
+// --- Transport layer ---
+const TELEGRAM_TOKEN_PATH = path.join(process.cwd(), ".local", "secrets", "telegram-bot-token");
+
+const identityRegistry = new IdentityRegistry();
+identityRegistry.loadFromDisk();
+
+const actionRegistry = new ActionRegistry();
+const transportRouter = new TransportRouter(identityRegistry, actionRegistry, sessionManager);
+
+const telegramTransport = new TelegramTransport({
+  tokenPath: TELEGRAM_TOKEN_PATH,
+  allowedUserIds: identityRegistry.userIdsForTransport("telegram"),
+});
+transportRouter.addTransport(telegramTransport);
 
 // --- Handle dashboard commands ---
 bus.on("command", async (cmd: DashboardCommand) => {
@@ -606,12 +625,18 @@ async function main() {
 
   log("supervisor ready — dashboard at http://localhost:9100");
 
+  // Start transport layer (non-blocking, non-fatal)
+  transportRouter.startAll().catch(err => {
+    log("transport startup error", { error: (err as Error).message });
+  });
+
   // Auto-start containers in background (non-blocking, non-fatal)
   startContainers();
 
   // Keep process alive, clean shutdown on SIGINT
   process.on("SIGINT", async () => {
     log("shutting down");
+    transportRouter.stopAll();
     if (activeHandle) {
       emitDashboard("container_stop", "core", { reason: "user" });
       try { await activeHandle.stop(); } catch { /* may have exited */ }
