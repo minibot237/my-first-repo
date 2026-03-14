@@ -233,6 +233,7 @@ export async function classifyMessage(
     log("classifier", "classified", {
       message: message.slice(0, 80),
       result,
+      raw: raw.trim().slice(0, 200),
       ...(attempt > 1 ? { attempt } : {}),
     });
     return result;

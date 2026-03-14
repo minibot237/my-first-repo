@@ -96,8 +96,10 @@ export class TransportRouter {
       identity: identity.id,
       route,
       ...(classification?.action ? { action: classification.action } : {}),
+      ...(classification?.params && Object.keys(classification.params).length > 0
+        ? { params: classification.params } : {}),
       ...(classification?.framing ? { framing: classification.framing } : {}),
-      contentLength: text.length,
+      message: text.slice(0, 200),
     });
 
     // 3. Dispatch by route
@@ -146,6 +148,7 @@ export class TransportRouter {
     });
 
     const reply = result.message ?? (result.ok ? "Done." : "Action failed.");
+    log("router", "reply", { identity: identity.id, tier: 1, reply: reply.slice(0, 200) });
     await transport.send(identity.transportUserId, reply);
   }
 
@@ -234,6 +237,7 @@ User message: ${text}`;
     }
 
     // Send reply back through transport
+    log("router", "reply", { identity: identity.id, tier: 2, reply: response.reply.slice(0, 200) });
     await transport.send(identity.transportUserId, response.reply);
   }
 
