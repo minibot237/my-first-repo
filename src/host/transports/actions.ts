@@ -16,6 +16,7 @@ export interface ActionDefinition {
   description: string;
   minTrust: number;
   schema: Record<string, string>;  // param name → description
+  actionParamsPrompt?: string;      // per-action extraction prompt for pass 2 (auto-generated from schema if absent)
   handler: (params: Action, context: ActionContext) => ActionResult;
 }
 

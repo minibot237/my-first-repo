@@ -22,6 +22,7 @@ import { IdentityRegistry } from "./transports/identity.js";
 import { ActionRegistry } from "./transports/actions.js";
 import { TransportRouter } from "./transports/router.js";
 import { TelegramTransport } from "./transports/telegram.js";
+import { Scheduler } from "./scheduler/scheduler.js";
 
 const RUNTIME = process.env["RUNTIME"] || "apple-containers";
 const CANARY_LOG_PATH = path.join(process.cwd(), "logs", "canary-evaluations.log");
@@ -95,6 +96,112 @@ const telegramTransport = new TelegramTransport({
   allowedUserIds: identityRegistry.userIdsForTransport("telegram"),
 });
 transportRouter.addTransport(telegramTransport);
+
+// --- Scheduler ---
+const scheduler = new Scheduler(actionRegistry, transportRouter.getTransports());
+
+// --- Scheduler actions (Tier 1) ---
+actionRegistry.register({
+  name: "list_schedules",
+  description: "List all scheduled tasks and their next run times.",
+  minTrust: 0.5,
+  schema: {},
+  handler: () => {
+    const schedules = scheduler.snapshot();
+    if (schedules.length === 0) {
+      return { ok: true, message: "No scheduled tasks." };
+    }
+    const lines = schedules.map(s => {
+      const status = s.enabled ? "✓" : "✗";
+      const next = s.nextRun ? ` → next: ${s.nextRun}` : "";
+      const last = s.lastResult?.message ? ` (last: ${s.lastResult.message.slice(0, 60)})` : "";
+      return `${status} ${s.action} [${s.type}]${next}${last}`;
+    });
+    return { ok: true, message: lines.join("\n") };
+  },
+});
+
+actionRegistry.register({
+  name: "add_schedule",
+  description: "Add a new scheduled task. Runs a registered action on a timer. Example: 'schedule get_timeout every 30 minutes' or 'schedule get_time_left daily at 9:00'.",
+  minTrust: 1.0,
+  schema: {
+    action: "action name to schedule",
+    type: "'interval' or 'cron'",
+    interval: "for interval: minutes between runs (e.g. 30)",
+    cron: "for cron: time spec (e.g. '9:00', 'weekdays 8:30')",
+    push: "'always', 'on_change', or 'never' (default: always)",
+  },
+  actionParamsPrompt: `Extract schedule parameters from the user's message.
+
+- action: the name of the action to schedule
+- type: "interval" if they say "every X minutes/hours", "cron" if they say "at X:XX" or "daily at"
+- interval: number of minutes between runs (only for interval type)
+- cron: time spec like "9:00" or "weekdays 8:30" (only for cron type)
+- push: "always" unless they say otherwise
+
+Examples:
+"schedule get_timeout every 30 minutes" → {"action":"get_timeout","type":"interval","interval":30,"push":"always"}
+"run get_time_left daily at 9am" → {"action":"get_time_left","type":"cron","cron":"9:00","push":"always"}
+"check disk every hour, only tell me if it changes" → {"action":"check_disk","type":"interval","interval":60,"push":"on_change"}
+
+Respond with exactly one JSON object. No other text.`,
+  handler: (params) => {
+    const actionName = String(params.action || "").trim();
+    if (!actionName) return { ok: false, message: "Action name required." };
+
+    const type = String(params.type || "").trim() as "interval" | "cron";
+    if (type !== "interval" && type !== "cron") {
+      return { ok: false, message: "Schedule type must be 'interval' or 'cron'." };
+    }
+
+    const def: any = {
+      action: actionName,
+      type,
+      enabled: true,
+      trustLevel: 1.0,
+      push: {
+        transport: "telegram",
+        userId: [...identityRegistry.userIdsForTransport("telegram")][0] || "",
+        condition: String(params.push || "always").trim() as any,
+      },
+    };
+
+    if (type === "interval") {
+      const minutes = Number(params.interval);
+      if (!minutes || minutes < 1) return { ok: false, message: "Interval must be at least 1 minute." };
+      def.intervalMs = minutes * 60000;
+    } else {
+      const cron = String(params.cron || "").trim();
+      if (!cron) return { ok: false, message: "Cron time spec required (e.g. '9:00', 'weekdays 8:30')." };
+      def.cron = cron;
+    }
+
+    scheduler.saveSchedule(def);
+    scheduler.addSchedule(def);
+    return { ok: true, message: `Scheduled ${actionName} (${type}${type === "interval" ? `, every ${Number(params.interval)}m` : `, ${def.cron}`}).` };
+  },
+});
+
+actionRegistry.register({
+  name: "remove_schedule",
+  description: "Remove a scheduled task by action name.",
+  minTrust: 1.0,
+  schema: {
+    action: "action name to unschedule",
+  },
+  actionParamsPrompt: `Extract the action name to remove from the schedule.
+
+Respond with exactly one JSON object. No other text.
+Example: {"action": "get_timeout"}`,
+  handler: (params) => {
+    const actionName = String(params.action || "").trim();
+    if (!actionName) return { ok: false, message: "Action name required." };
+    scheduler.removeSchedule(actionName);
+    scheduler.deleteSchedule(actionName);
+    return { ok: true, message: `Removed schedule for ${actionName}.` };
+  },
+});
 
 // --- Handle dashboard commands ---
 bus.on("command", async (cmd: DashboardCommand) => {
@@ -621,6 +728,7 @@ async function main() {
     pipeline: pipelineState,
     pipelineError,
     trust: trustStore.snapshot(),
+    schedules: scheduler.snapshot(),
   }));
 
   log("supervisor ready — dashboard at http://localhost:9100");
@@ -630,12 +738,16 @@ async function main() {
     log("transport startup error", { error: (err as Error).message });
   });
 
+  // Start scheduler (loads definitions from .local/config/schedules/)
+  scheduler.start();
+
   // Auto-start containers in background (non-blocking, non-fatal)
   startContainers();
 
   // Keep process alive, clean shutdown on SIGINT
   process.on("SIGINT", async () => {
     log("shutting down");
+    scheduler.stop();
     transportRouter.stopAll();
     if (activeHandle) {
       emitDashboard("container_stop", "core", { reason: "user" });
