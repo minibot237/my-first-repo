@@ -2484,8 +2484,19 @@ document.getElementById('log-file-select').addEventListener('change', (e) => {
   LogViewer.start(e.target.value);
 });
 
-// Load log list on startup and refresh periodically
-LogViewer.loadLogList();
+// Load log list on startup, auto-select supervisor log, refresh periodically
+LogViewer.loadLogList().then(() => {
+  if (!LogViewer.currentLog) {
+    const select = document.getElementById('log-file-select');
+    for (const opt of select.options) {
+      if (opt.value === 'supervisor.out.log') {
+        select.value = 'supervisor.out.log';
+        LogViewer.start('supervisor.out.log');
+        break;
+      }
+    }
+  }
+});
 setInterval(() => LogViewer.loadLogList(), 30000);
 
 // --- Initialize Panel Manager ---
