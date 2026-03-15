@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { log } from "../log.js";
 import { regexScan } from "./patterns.js";
+import { suspicionScan, type SuspicionResult } from "./suspicion.js";
 import type { EvaluationResult, EvalMetrics, ChunkMetrics, LlmVerdict } from "./types.js";
 
 // ── Load prompts from files ──────────────────────────────────────────
@@ -228,11 +229,18 @@ interface LlmCallResult {
 }
 
 /** Direct fetch to Ollama with token usage capture */
-async function callCanaryLlm(content: string, callStart: number, contentType?: string): Promise<LlmCallResult> {
+async function callCanaryLlm(content: string, callStart: number, contentType?: string, preScore?: number): Promise<LlmCallResult> {
   const systemPrompt = getSystemPrompt(contentType);
+  let userMsg = buildUserMessage(content);
+
+  // Only inject pre-score when keywords actually fired — don't bias the LLM on clean content
+  if (preScore !== undefined && preScore < 0.92) {
+    userMsg += `\n\nPre-analysis suspicion score: ${preScore.toFixed(2)} (1.0 = clean, lower = more suspicious)`;
+  }
+
   const messages = [
     { role: "system", content: systemPrompt },
-    { role: "user", content: buildUserMessage(content) },
+    { role: "user", content: userMsg },
   ];
 
   const res = await fetch(CANARY_CONFIG.endpoint, {
@@ -429,7 +437,16 @@ export async function evaluateContent(content: string, contentType?: string): Pr
     };
   }
 
-  // Layer 2: clean + chunk + LLM classification
+  // Layer 2: keyword suspicion scoring
+  const suspicion = suspicionScan(content);
+  if (suspicion.hits.length > 0) {
+    log("canary", "suspicion keywords", {
+      score: suspicion.score.toFixed(2),
+      hits: suspicion.hits.map(h => `${h.term} (-${h.weight})`),
+    });
+  }
+
+  // Layer 3: clean + chunk + LLM classification
   const cleaned = cleanContent(content);
   const chunks = chunkContent(cleaned);
   const overheadChars = getOverheadChars(contentType);
@@ -445,7 +462,8 @@ export async function evaluateContent(content: string, contentType?: string): Pr
 
   let aggregateVerdict: LlmVerdict | null = null;
   let aggregateRaw = "";
-  let worstFitScore = CANARY_CONFIG.maxFitScore;
+  // Start fit score from suspicion — keywords pull it down before LLM even runs
+  let worstFitScore = Math.min(CANARY_CONFIG.maxFitScore, suspicion.score);
   let worstObsScore = 1.0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
@@ -461,7 +479,7 @@ export async function evaluateContent(content: string, contentType?: string): Pr
 
     let callResult: LlmCallResult;
     try {
-      callResult = await callCanaryLlm(chunk, chunkStart, contentType);
+      callResult = await callCanaryLlm(chunk, chunkStart, contentType, suspicion.score);
     } catch (err) {
       log("canary", "LLM call failed", {
         chunkIndex: i,

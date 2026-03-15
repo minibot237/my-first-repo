@@ -93,6 +93,64 @@ Example: {"name": "pirate", "prompt": "You are a pirate. Respond in pirate speak
     schema: {},
     handler: () => ({ ok: true }),
   },
+  // --- Scheduler actions ---
+  {
+    name: "list_schedules",
+    description: "Show scheduled tasks, timers, and recurring jobs. Use when user says 'schedules', 'what's scheduled', 'list timers', 'show recurring tasks'.",
+    minTrust: 0.5,
+    schema: {},
+    handler: () => ({ ok: true }),
+  },
+  {
+    name: "add_schedule",
+    description: "Schedule a task to run automatically on a timer. Use when user says 'schedule X every Y', 'run X daily at Y', 'set up recurring X'.",
+    minTrust: 1.0,
+    schema: {
+      action: "action name to schedule",
+      type: "'interval' or 'cron'",
+      interval: "for interval: minutes between runs (e.g. 30)",
+      cron: "for cron: time spec (e.g. '9:00', 'weekdays 8:30')",
+      push: "'always', 'on_change', or 'never' (default: always)",
+    },
+    actionParamsPrompt: `Extract schedule parameters from the user's message.
+
+- action: the name of the action to schedule
+- type: "interval" if they say "every X minutes/hours", "cron" if they say "at X:XX" or "daily at"
+- interval: number of minutes between runs (only for interval type)
+- cron: time spec like "9:00" or "weekdays 8:30" (only for cron type)
+- push: "always" unless they say otherwise
+
+Examples:
+"schedule get_timeout every 30 minutes" → {"action":"get_timeout","type":"interval","interval":30,"push":"always"}
+"run get_time_left daily at 9am" → {"action":"get_time_left","type":"cron","cron":"9:00","push":"always"}
+"check disk every hour, only tell me if it changes" → {"action":"check_disk","type":"interval","interval":60,"push":"on_change"}
+
+Respond with exactly one JSON object. No other text.`,
+    handler: () => ({ ok: true }),
+  },
+  {
+    name: "remove_schedule",
+    description: "Stop or remove a scheduled task. Use when user says 'stop scheduling X', 'unschedule X', 'remove the X schedule', 'cancel the timer for X'.",
+    minTrust: 1.0,
+    schema: { action: "action name to unschedule" },
+    actionParamsPrompt: `Extract the action name to remove from the schedule.
+
+Respond with exactly one JSON object. No other text.
+Example: {"action": "get_timeout"}`,
+    handler: () => ({ ok: true }),
+  },
+  // --- Notify action ---
+  {
+    name: "notify",
+    description: "Send a message or notification to the user. Use when user says 'send me a message', 'notify me', 'tell me when', 'alert me', 'ping me'.",
+    minTrust: 0.5,
+    schema: { message: "the message text to send" },
+    actionParamsPrompt: `Extract the message to send from the user's request.
+
+Respond with exactly one JSON object. No other text.
+Example: {"message": "Hello from minibot!"}`,
+    handler: () => ({ ok: true }),
+  },
 ];
 
 interface TestCase {
@@ -105,37 +163,86 @@ interface TestCase {
 }
 
 const TEST_CASES: TestCase[] = [
-  // --- Pass 1 only: parameterless actions ---
+  // =============================================
+  // PASS 1 ONLY: Parameterless actions
+  // =============================================
   { message: "What is the session timeout?", expectedRoute: "ACTION", expectedAction: "get_timeout" },
   { message: "How much time is left?", expectedRoute: "ACTION", expectedAction: "get_time_left" },
   { message: "Extend the session", expectedRoute: "ACTION", expectedAction: "extend_timeout" },
+  { message: "What schedules are running?", expectedRoute: "ACTION", expectedAction: "list_schedules" },
+  { message: "Show me the scheduled tasks", expectedRoute: "ACTION", expectedAction: "list_schedules" },
 
-  // --- Two-pass: parameterized actions ---
+  // =============================================
+  // TWO-PASS: Parameterized actions — original set
+  // =============================================
   { message: "Set timeout to 4 hours", expectedRoute: "ACTION", expectedAction: "set_timeout", expectedParams: { value: 240 } },
   { message: "Set timeout to 45 minutes", expectedRoute: "ACTION", expectedAction: "set_timeout", expectedParams: { value: 45 } },
   { message: "Set timeout to 2 hours", expectedRoute: "ACTION", expectedAction: "set_timeout", expectedParams: { value: 120 } },
   { message: "Make replies shorter, like 200 chars", expectedRoute: "ACTION", expectedAction: "set_reply_length", expectedParams: { value: 200 } },
   { message: "Switch to root mode", expectedRoute: "ACTION", expectedAction: "set_mode", expectedParams: { name: "root" } },
 
-  // --- Two-pass: abbreviated / tricky inputs (the whole reason for two-pass) ---
+  // =============================================
+  // TWO-PASS: Abbreviated / tricky inputs
+  // =============================================
   { message: "timeout 33m", expectedRoute: "ACTION", expectedAction: "set_timeout", expectedParams: { value: 33 } },
   { message: "timeout half an hour", expectedRoute: "ACTION", expectedAction: "set_timeout", expectedParams: { value: 30 } },
 
-  // --- Tier 2: CHAT ---
+  // =============================================
+  // TWO-PASS: Scheduler actions
+  // =============================================
+  { message: "Schedule get_timeout every 30 minutes", expectedRoute: "ACTION", expectedAction: "add_schedule", expectedParams: { action: "get_timeout", type: "interval", interval: 30 } },
+  { message: "Run get_time_left daily at 9am", expectedRoute: "ACTION", expectedAction: "add_schedule", expectedParams: { action: "get_time_left", type: "cron", cron: "9:00" } },
+  { message: "Stop scheduling get_timeout", expectedRoute: "ACTION", expectedAction: "remove_schedule", expectedParams: { action: "get_timeout" } },
+  { message: "Unschedule the timeout check", expectedRoute: "ACTION", expectedAction: "remove_schedule" },
+
+  // =============================================
+  // TWO-PASS: Notify action
+  // =============================================
+  { message: "Send me a message saying hello", expectedRoute: "ACTION", expectedAction: "notify", expectedParams: { message: "hello" } },
+  { message: "Notify me that the build is done", expectedRoute: "ACTION", expectedAction: "notify" },
+
+  // =============================================
+  // TIER 2: Chat — greetings, small talk, general questions
+  // =============================================
   { message: "Hey", expectedRoute: "CHAT" },
   { message: "Hey, how's it going?", expectedRoute: "CHAT" },
+  // NOTE: "What can you do?" and "Tell me a joke" often route to AGENT/plain_chat.
+  // That's functionally fine (works, just more expensive). Marking as CHAT is aspirational.
   { message: "What can you do?", expectedRoute: "CHAT" },
   { message: "Tell me a joke", expectedRoute: "CHAT" },
+  { message: "Thanks", expectedRoute: "CHAT" },
+  { message: "Good morning", expectedRoute: "CHAT" },
 
-  // --- Tier 3: AGENT ---
+  // =============================================
+  // TIER 3: Agent — needs tools, commands, file access
+  // =============================================
+  // tech_chat: about this system
   { message: "Check the supervisor logs for errors", expectedRoute: "AGENT", expectedFraming: "tech_chat" },
   { message: "What's the disk usage?", expectedRoute: "AGENT", expectedFraming: "tech_chat" },
+  { message: "How does the canary pipeline work?", expectedRoute: "AGENT", expectedFraming: "tech_chat" },
+  { message: "Show me the last 10 lines of the supervisor log", expectedRoute: "AGENT", expectedFraming: "tech_chat" },
+
+  // tool_builder: wants a new repeating capability
   { message: "Build me a weather tool", expectedRoute: "AGENT", expectedFraming: "tool_builder" },
+  { message: "Make a tool that checks my GitHub notifications", expectedRoute: "AGENT", expectedFraming: "tool_builder" },
+
+  // plain_chat: general questions needing agent power
   { message: "What's the deal with solid state batteries?", expectedRoute: "AGENT", expectedFraming: "plain_chat" },
   { message: "Find me Dickies camel work pants in 34x34", expectedRoute: "AGENT", expectedFraming: "plain_chat" },
+  { message: "What's the weather in Portland right now?", expectedRoute: "AGENT", expectedFraming: "plain_chat" },
 
-  // --- Trust-gated ---
+  // =============================================
+  // TRUST-GATED: Lower trust can't access AGENT
+  // =============================================
   { message: "Check the supervisor logs", expectedRoute: "CHAT", trustLevel: 0.5 },
+  { message: "Set timeout to 1 hour", expectedRoute: "CHAT", trustLevel: 0.5 },  // set_timeout requires trust 1.0
+
+  // =============================================
+  // EDGE CASES: Ambiguous or tricky routing
+  // =============================================
+  { message: "timeout?", expectedRoute: "ACTION", expectedAction: "get_timeout" },
+  { message: "schedules", expectedRoute: "ACTION", expectedAction: "list_schedules" },
+  { message: "extend", expectedRoute: "ACTION", expectedAction: "extend_timeout" },
 ];
 
 function formatResult(tc: TestCase, result: Classification | null): string {

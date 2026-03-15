@@ -27,11 +27,14 @@ Dashboard at http://localhost:9100
 - **Ingest** (`src/host/ingest/`) — content ingestion pipelines (email, web) producing structured JSON envelopes
 - **Canary** (`src/host/canary/`) — content safety evaluation: code tools → LLM classification pipeline
 - **Trust** (`src/host/trust/`) — persistent fit_value store for source trustworthiness, file-backed in `.local/data/`
+- **Transports** (`src/host/transports/`) — message routing layer: Telegram transport, identity registry, action registry, two-pass Qwen classifier, prompt builder
+- **Scheduler** (`src/host/scheduler/`) — interval/cron task scheduler with proactive push, disk persistence in `.local/config/schedules/`
+- **Minibot.app** — macOS app bundle wrapper for stable TCC permissions (Full Disk Access, Local Network)
 
 ## Models (via Ollama)
 
 - **CORE** — Gemma 3 4B (`gemma3:4b`, Q4_K_M, ~3GB). Routing, triage, summarization, and decision-making for the primary agent loop. Replaced Qwen 3.5 9B after model eval (2026-03-11) — better routing quality at 30x faster TTFT.
-- **Canary** — Qwen 2.5 3B (`qwen2.5:3b`, Q4_K_M, ~2.4GB). Injection detection in the safety/honeypot VM. Tight prompt, flag-anything-weird mode.
+- **Canary / Classifier** — Qwen 2.5 3B (`qwen2.5:3b`, Q4_K_M, ~2.4GB). Two roles: (1) injection detection in the safety pipeline, (2) two-pass message classifier that routes user messages to Tier 1 (action), Tier 2 (chat), or Tier 3 (agent). ~350ms per pass locally.
 - **Coder** — Claude Code CLI. Code generation and tool building (not served by Ollama).
 
 Both models run on the host via Ollama as a native daemon (~5.4GB combined). Containers have no direct model access — all inference requests flow through the supervisor's session manager, which routes to the appropriate backend and logs everything.

@@ -7,14 +7,15 @@ export interface DashboardEvent {
     | "state_sync" | "pipeline_status"
     | "canary_result"
     | "trust_update"
-    | "ingest_start" | "ingest_result";
+    | "ingest_start" | "ingest_result"
+    | "pentest_line" | "pentest_complete" | "pentest_error";
   containerId: string;
   timestamp: string;
   data: unknown;
 }
 
 export interface DashboardCommand {
-  action: "nudge" | "stop" | "session_create" | "session_send" | "session_close" | "session_clear_all" | "pipeline_start" | "supervisor_restart" | "clear_logs" | "canary_evaluate" | "trust_query" | "trust_override" | "trust_list" | "email_ingest" | "batch_ingest";
+  action: "nudge" | "stop" | "session_create" | "session_send" | "session_close" | "session_clear_all" | "pipeline_start" | "supervisor_restart" | "clear_logs" | "canary_evaluate" | "trust_query" | "trust_override" | "trust_list" | "email_ingest" | "batch_ingest" | "pentest_run";
   containerId: string;
   data?: unknown;
 }

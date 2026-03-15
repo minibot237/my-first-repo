@@ -1,6 +1,7 @@
 import net from "node:net";
 import path from "node:path";
 import fs from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
 import {
   encode, makeHelloAck, makeNudge, makeWebFetchResponse,
   MessageReader, type Message,
@@ -103,7 +104,7 @@ const scheduler = new Scheduler(actionRegistry, transportRouter.getTransports())
 // --- Scheduler actions (Tier 1) ---
 actionRegistry.register({
   name: "list_schedules",
-  description: "List all scheduled tasks and their next run times.",
+  description: "Show scheduled tasks, timers, and recurring jobs. Use when user says 'schedules', 'what's scheduled', 'list timers', 'show recurring tasks'.",
   minTrust: 0.5,
   schema: {},
   handler: () => {
@@ -123,7 +124,7 @@ actionRegistry.register({
 
 actionRegistry.register({
   name: "add_schedule",
-  description: "Add a new scheduled task. Runs a registered action on a timer. Example: 'schedule get_timeout every 30 minutes' or 'schedule get_time_left daily at 9:00'.",
+  description: "Schedule a task to run automatically on a timer. Use when user says 'schedule X every Y', 'run X daily at Y', 'set up recurring X'.",
   minTrust: 1.0,
   schema: {
     action: "action name to schedule",
@@ -185,7 +186,7 @@ Respond with exactly one JSON object. No other text.`,
 
 actionRegistry.register({
   name: "remove_schedule",
-  description: "Remove a scheduled task by action name.",
+  description: "Stop or remove a scheduled task. Use when user says 'stop scheduling X', 'unschedule X', 'remove the X schedule', 'cancel the timer for X'.",
   minTrust: 1.0,
   schema: {
     action: "action name to unschedule",
@@ -200,6 +201,46 @@ Example: {"action": "get_timeout"}`,
     scheduler.removeSchedule(actionName);
     scheduler.deleteSchedule(actionName);
     return { ok: true, message: `Removed schedule for ${actionName}.` };
+  },
+});
+
+// --- Notify action (Tier 1) ---
+// Universal outbound push — scheduler, agent sessions, and classifier can all use this.
+actionRegistry.register({
+  name: "notify",
+  description: "Send a message or notification to the user. Use when user says 'send me a message', 'notify me', 'tell me when', 'alert me', 'ping me'.",
+  minTrust: 0.5,
+  schema: {
+    message: "the message text to send",
+  },
+  actionParamsPrompt: `Extract the message to send from the user's request.
+
+Respond with exactly one JSON object. No other text.
+Example: {"message": "Hello from minibot!"}`,
+  handler: (params) => {
+    const message = String(params.message || "").trim();
+    if (!message) return { ok: false, message: "Message text required." };
+
+    // Default: send to all known transports/users
+    const transports = transportRouter.getTransports();
+    const sent: string[] = [];
+
+    for (const [tName, transport] of transports) {
+      const userIds = identityRegistry.userIdsForTransport(tName);
+      for (const userId of userIds) {
+        transport.send(userId, message).catch(err => {
+          log("notify send error", { transport: tName, userId, error: (err as Error).message });
+        });
+        sent.push(`${tName}:${userId}`);
+      }
+    }
+
+    if (sent.length === 0) {
+      return { ok: false, message: "No transports available to send." };
+    }
+
+    log("notify sent", { message: message.slice(0, 100), targets: sent });
+    return { ok: true, message: `Sent to ${sent.length} target${sent.length > 1 ? "s" : ""}.` };
   },
 });
 
@@ -399,6 +440,120 @@ bus.on("command", async (cmd: DashboardCommand) => {
         log("nudge sent", { containerId: id });
       }
     }
+    return;
+  }
+
+  if (cmd.action === "pentest_run") {
+    const { probe } = cmd.data as { probe: string };
+    const validProbes = ["canary", "classifier", "ingest", "all"];
+    if (!validProbes.includes(probe)) {
+      emitDashboard("pentest_error", "_pentest", { error: `Unknown probe: ${probe}` });
+      return;
+    }
+    log("pentest run requested", { probe });
+
+    const pentestDir = path.resolve(process.env["HOME"] || "~", "projects/pentest");
+    const runnerPath = path.join(pentestDir, "dist/runner.js");
+
+    if (!fs.existsSync(runnerPath)) {
+      emitDashboard("pentest_error", "_pentest", { error: "Pentest suite not found at " + runnerPath });
+      return;
+    }
+
+    // Create a log file in minibot's logs/ dir so the dashboard log viewer can show it
+    const ts = new Date().toLocaleString("en-US", {
+      timeZone: "America/Los_Angeles",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+      hour12: false,
+    }).replace(/(\d+)\/(\d+)\/(\d+),\s*/, "$3-$1-$2_").replace(/:/g, "-");
+    const logFileName = `pentest-${probe}-${ts}.log`;
+    const logFilePath = path.join(process.cwd(), "logs", logFileName);
+    fs.mkdirSync(path.dirname(logFilePath), { recursive: true });
+
+    const args = ["--concurrency", "1", "--delay", "100", "--log", logFilePath];
+    if (probe !== "all") {
+      args.unshift("--probe", probe);
+    }
+
+    // Tell the dashboard which log file to open
+    emitDashboard("pentest_line", "_pentest", {
+      technique: "system",
+      outcome: "detected",
+      latency_ms: 0,
+      logFile: logFileName,
+    });
+
+    const child: ChildProcess = spawn("node", [runnerPath, ...args], {
+      cwd: pentestDir,
+      env: { ...process.env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    // Tail the JSONL log file for rich streaming data
+    let logBytesRead = 0;
+    const logPollInterval = setInterval(() => {
+      try {
+        const stat = fs.statSync(logFilePath);
+        if (stat.size > logBytesRead) {
+          const fd = fs.openSync(logFilePath, "r");
+          const buf = Buffer.alloc(stat.size - logBytesRead);
+          fs.readSync(fd, buf, 0, buf.length, logBytesRead);
+          fs.closeSync(fd);
+          logBytesRead = stat.size;
+
+          const chunk = buf.toString("utf-8");
+          for (const line of chunk.split("\n")) {
+            if (!line.trim()) continue;
+            try {
+              const entry = JSON.parse(line);
+              emitDashboard("pentest_line", "_pentest", {
+                technique: entry.technique,
+                id: entry.id,
+                outcome: entry.outcome,
+                latency_ms: entry.latency_ms,
+                payload: entry.payload,
+                response: entry.response,
+              });
+            } catch {}
+          }
+        }
+      } catch {}
+    }, 500);
+
+    child.stderr?.on("data", (chunk: Buffer) => {
+      log("pentest stderr", { output: chunk.toString() });
+    });
+
+    child.on("close", (code) => {
+      clearInterval(logPollInterval);
+      log("pentest completed", { probe, exitCode: code });
+
+      // Find the most recent result file for this probe
+      const resultsDir = path.join(pentestDir, "results");
+      try {
+        const files = fs.readdirSync(resultsDir)
+          .filter((f: string) => f.endsWith(".json"))
+          .filter((f: string) => probe === "all" || f.startsWith(probe))
+          .sort()
+          .reverse();
+
+        if (files.length > 0) {
+          const report = JSON.parse(fs.readFileSync(path.join(resultsDir, files[0]), "utf-8"));
+          emitDashboard("pentest_complete", "_pentest", { report, logFile: logFileName });
+        } else {
+          emitDashboard("pentest_complete", "_pentest", { report: null, logFile: logFileName });
+        }
+      } catch (err) {
+        emitDashboard("pentest_error", "_pentest", { error: (err as Error).message });
+      }
+    });
+
+    child.on("error", (err) => {
+      log("pentest spawn error", { error: err.message });
+      emitDashboard("pentest_error", "_pentest", { error: err.message });
+    });
+    return;
   }
 });
 

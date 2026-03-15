@@ -1,2 +1,2 @@
-Respond with ONLY this JSON:
-{"safe": true/false, "flags": ["list_of_concerns"], "confidence": 0.0-1.0, "reasoning": "brief explanation"}
+Respond with ONLY this JSON (no preamble, no markdown):
+{"safe": true/false, "flags": ["list_of_concerns"], "confidence": 0.0-1.0, "reasoning": "why in 10 words or less"}

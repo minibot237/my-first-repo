@@ -18,7 +18,120 @@ export interface StateSnapshot {
 export function startDashboard(getSnapshot?: () => StateSnapshot): void {
   const htmlPath = path.join(import.meta.dirname, "../dashboard-ui/index.html");
 
-  const server = http.createServer((_req, res) => {
+  const logsDir = path.join(process.cwd(), "logs");
+
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url || "/", `http://${req.headers.host}`);
+
+    // GET /api/logs — list available log files
+    if (url.pathname === "/api/logs" && req.method === "GET") {
+      try {
+        const files = fs.readdirSync(logsDir)
+          .filter((f: string) => f.endsWith(".log"))
+          .map((f: string) => {
+            const stat = fs.statSync(path.join(logsDir, f));
+            return { name: f, size: stat.size, mtime: stat.mtimeMs };
+          })
+          .sort((a: { mtime: number }, b: { mtime: number }) => b.mtime - a.mtime);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(files));
+      } catch {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end("[]");
+      }
+      return;
+    }
+
+    // GET /api/logs/:name?tail=N — tail a specific log file
+    const logMatch = url.pathname.match(/^\/api\/logs\/([a-zA-Z0-9._-]+)$/);
+    if (logMatch && req.method === "GET") {
+      const filename = logMatch[1];
+      // Prevent path traversal
+      if (filename.includes("..") || filename.includes("/")) {
+        res.writeHead(400);
+        res.end("Bad request");
+        return;
+      }
+      const filePath = path.join(logsDir, filename);
+      if (!fs.existsSync(filePath)) {
+        res.writeHead(404);
+        res.end("Not found");
+        return;
+      }
+      const tailLines = parseInt(url.searchParams.get("tail") || "200", 10);
+      try {
+        const content = fs.readFileSync(filePath, "utf-8");
+        const lines = content.split("\n").filter((l: string) => l.length > 0);
+        const tail = lines.slice(-tailLines);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ name: filename, lines: tail, total: lines.length }));
+      } catch {
+        res.writeHead(500);
+        res.end("Read error");
+      }
+      return;
+    }
+
+    // GET /api/pentest/results — list pentest result files
+    const pentestResultsDir = path.resolve(process.env["HOME"] || "~", "projects/pentest/results");
+    if (url.pathname === "/api/pentest/results" && req.method === "GET") {
+      try {
+        if (!fs.existsSync(pentestResultsDir)) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end("[]");
+          return;
+        }
+        const files = fs.readdirSync(pentestResultsDir)
+          .filter((f: string) => f.endsWith(".json"))
+          .map((f: string) => {
+            const stat = fs.statSync(path.join(pentestResultsDir, f));
+            // Parse probe name and date from filename
+            const match = f.match(/^([a-z]+)-(.+)\.json$/);
+            return {
+              name: f,
+              probe: match ? match[1] : f,
+              date: match ? match[2].replace(/_/, " ") : "",
+              size: stat.size,
+              mtime: stat.mtimeMs,
+            };
+          })
+          .sort((a: { mtime: number }, b: { mtime: number }) => b.mtime - a.mtime);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(files));
+      } catch {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end("[]");
+      }
+      return;
+    }
+
+    // GET /api/pentest/results/:name — read a specific result file
+    const pentestMatch = url.pathname.match(/^\/api\/pentest\/results\/([a-zA-Z0-9._-]+\.json)$/);
+    if (pentestMatch && req.method === "GET") {
+      const filename = pentestMatch[1];
+      if (filename.includes("..") || filename.includes("/")) {
+        res.writeHead(400);
+        res.end("Bad request");
+        return;
+      }
+      const filePath = path.join(pentestResultsDir, filename);
+      if (!fs.existsSync(filePath)) {
+        res.writeHead(404);
+        res.end("Not found");
+        return;
+      }
+      try {
+        const content = fs.readFileSync(filePath, "utf-8");
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(content);
+      } catch {
+        res.writeHead(500);
+        res.end("Read error");
+      }
+      return;
+    }
+
+    // Default: serve dashboard HTML
     if (!fs.existsSync(htmlPath)) {
       res.writeHead(500);
       res.end("Dashboard HTML not found");

@@ -15,7 +15,7 @@
     user-select: none;
   }
 
-  #command-log, .channel-messages, #chat-messages, #chat-input { user-select: text; }
+  #command-log, .channel-messages, #chat-messages, #chat-input, #log-viewer-content { user-select: text; }
 
   #app {
     display: flex;
@@ -138,6 +138,177 @@
   }
 
   .dock-move-menu-item:hover { background: #333; color: #fff; }
+
+  /* --- Log Viewer Panel --- */
+  #log-viewer-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid #333;
+    flex-shrink: 0;
+  }
+
+  #log-file-select {
+    background: #252540;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #ccc;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 3px 8px;
+    outline: none;
+    flex: 1;
+    max-width: 280px;
+  }
+
+  #log-file-select:focus { border-color: #666; }
+
+  #log-autoscroll-label {
+    font-size: 11px;
+    color: #666;
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+  }
+
+  #log-autoscroll-label input { vertical-align: middle; cursor: pointer; }
+
+  #log-viewer-status {
+    font-size: 10px;
+    color: #555;
+    margin-left: auto;
+  }
+
+  #log-viewer-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 10px;
+    font-size: 12px;
+    line-height: 1.5;
+    min-height: 0;
+  }
+
+  .log-line { white-space: pre-wrap; word-break: break-all; color: #999; }
+  .log-line .log-ts { color: #555; }
+  .log-line .log-component { color: #c4b5fd; }
+  .log-line .log-msg { color: #ccc; }
+  .log-line .log-error { color: #ef4444; }
+  .log-line .log-safe { color: #4ade80; }
+
+  /* --- Pentest Panel --- */
+  #pentest-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid #333;
+    flex-shrink: 0;
+  }
+
+  #pentest-result-select {
+    background: #252540;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #ccc;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 3px 8px;
+    outline: none;
+    flex: 1;
+    max-width: 280px;
+  }
+
+  #pentest-result-select:focus { border-color: #666; }
+
+  .pentest-btn {
+    background: #252540;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #ccc;
+    font-family: inherit;
+    font-size: 11px;
+    padding: 3px 10px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .pentest-btn:hover { background: #333350; border-color: #666; }
+  .pentest-btn.running { color: #facc15; border-color: #facc15; cursor: wait; }
+  .pentest-scroll-btn { padding: 2px 6px; font-size: 10px; line-height: 1; }
+  .pentest-scroll-btn.tailing { color: #4ade80; border-color: #4ade80; }
+
+  #pentest-status {
+    font-size: 10px;
+    color: #555;
+    margin-left: auto;
+  }
+
+  #pentest-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    padding: 8px 12px;
+    font-size: 12px;
+    line-height: 1.6;
+    min-height: 0;
+    user-select: text;
+  }
+
+  .pentest-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .pentest-stat {
+    background: #252540;
+    border-radius: 4px;
+    padding: 8px 12px;
+    text-align: center;
+  }
+
+  .pentest-stat .label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
+  .pentest-stat .value { font-size: 20px; font-weight: bold; margin-top: 2px; }
+  .pentest-stat .value.safe { color: #4ade80; }
+  .pentest-stat .value.warn { color: #facc15; }
+  .pentest-stat .value.danger { color: #ef4444; }
+
+  .pentest-technique-row {
+    display: flex;
+    align-items: center;
+    padding: 3px 0;
+    border-bottom: 1px solid #1a1a2e;
+  }
+
+  .pentest-technique-row .name { flex: 1; color: #999; }
+  .pentest-technique-row .bar-wrap { width: 120px; height: 6px; background: #252540; border-radius: 3px; margin: 0 8px; }
+  .pentest-technique-row .bar { height: 100%; border-radius: 3px; }
+  .pentest-technique-row .bar.safe { background: #4ade80; }
+  .pentest-technique-row .bar.warn { background: #facc15; }
+  .pentest-technique-row .bar.danger { background: #ef4444; }
+  .pentest-technique-row .pct { width: 50px; text-align: right; font-size: 11px; }
+
+  .pentest-bypassed-list { margin-top: 12px; }
+  .pentest-bypassed-item {
+    background: #2a1a1a;
+    border: 1px solid #442222;
+    border-radius: 4px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+  }
+  .pentest-bypassed-item .technique { color: #ef4444; font-weight: bold; font-size: 11px; }
+  .pentest-bypassed-item .payload { color: #999; font-size: 11px; margin-top: 4px; white-space: pre-wrap; word-break: break-all; }
+  .pentest-bypassed-item .response { color: #666; font-size: 10px; margin-top: 4px; white-space: pre-wrap; }
+
+  .pentest-stream-log { flex: 1; overflow-y: auto; padding: 4px 8px; }
+  .pentest-stream-line { font-size: 11px; color: #666; padding: 1px 0; }
+  .pentest-stream-line.bypassed { color: #ef4444; }
+  .pentest-stream-line.detected { color: #4ade80; }
+  .pentest-stream-line.partial { color: #facc15; }
+  .pentest-stream-line.error { color: #888; }
 
   #command-header {
     padding: 12px 16px;
@@ -812,6 +983,35 @@
     <div class="dock-group" id="dock-right-bottom">
       <div class="dock-tab-bar"></div>
       <div class="dock-group-content">
+        <div class="panel" id="panel-logs">
+          <div id="log-viewer-toolbar">
+            <select id="log-file-select">
+              <option value="">select log...</option>
+            </select>
+            <label id="log-autoscroll-label"><input type="checkbox" id="log-autoscroll" checked> follow</label>
+            <span id="log-viewer-status"></span>
+          </div>
+          <div id="log-viewer-content"></div>
+        </div>
+        <div class="panel" id="panel-pentest">
+          <div id="pentest-toolbar">
+            <select id="pentest-result-select">
+              <option value="">select result...</option>
+            </select>
+            <button class="pentest-btn" id="pentest-run-canary">canary</button>
+            <button class="pentest-btn" id="pentest-run-classifier">classifier</button>
+            <button class="pentest-btn" id="pentest-run-ingest">ingest</button>
+            <button class="pentest-btn" id="pentest-run-all">sweep</button>
+            <span id="pentest-status"></span>
+            <button class="pentest-btn pentest-scroll-btn" id="pentest-scroll-top" title="Scroll to top">&#9650;</button>
+            <button class="pentest-btn pentest-scroll-btn" id="pentest-scroll-bottom" title="Scroll to bottom">&#9660;</button>
+          </div>
+          <div id="pentest-content">
+            <div style="color: #555; padding: 20px; text-align: center;">
+              select a result to view, or run a probe
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -1421,6 +1621,19 @@ function handleEvent(event) {
       }
       break;
     }
+
+    // --- Pentest events ---
+    case 'pentest_line':
+      Pentest.handleLine(data);
+      break;
+
+    case 'pentest_complete':
+      Pentest.handleComplete(data);
+      break;
+
+    case 'pentest_error':
+      Pentest.handleError(data);
+      break;
   }
 }
 
@@ -2138,13 +2351,428 @@ makeDragV(
 // Initial render (empty state)
 renderChat();
 
+// --- Log Viewer ---
+
+const LogViewer = {
+  currentLog: null,
+  pollTimer: null,
+  lastLineCount: 0,
+
+  // Important logs sorted to top, everything else below a divider
+  primaryLogs: [
+    'supervisor.out.log',
+    'supervisor.err.log',
+    'canary-evaluations.log',
+    'canary-threats.log',
+    'trust-changes.log',
+    'smoke-emails-latest.log',
+  ],
+
+  async loadLogList() {
+    try {
+      const res = await fetch('/api/logs');
+      const files = await res.json();
+      const select = document.getElementById('log-file-select');
+      const current = select.value;
+      select.innerHTML = '<option value="">select log...</option>';
+
+      const primary = [];
+      const rest = [];
+      for (const f of files) {
+        if (this.primaryLogs.includes(f.name)) {
+          primary.push(f);
+        } else {
+          rest.push(f);
+        }
+      }
+      // Sort primary by defined order
+      primary.sort((a, b) => this.primaryLogs.indexOf(a.name) - this.primaryLogs.indexOf(b.name));
+
+      for (const f of primary) {
+        const size = f.size > 1024 ? (f.size / 1024).toFixed(0) + 'K' : f.size + 'B';
+        const opt = document.createElement('option');
+        opt.value = f.name;
+        opt.textContent = `${f.name} (${size})`;
+        select.appendChild(opt);
+      }
+      if (primary.length > 0 && rest.length > 0) {
+        const sep = document.createElement('option');
+        sep.disabled = true;
+        sep.textContent = '────────────';
+        select.appendChild(sep);
+      }
+      for (const f of rest) {
+        const size = f.size > 1024 ? (f.size / 1024).toFixed(0) + 'K' : f.size + 'B';
+        const opt = document.createElement('option');
+        opt.value = f.name;
+        opt.textContent = `${f.name} (${size})`;
+        select.appendChild(opt);
+      }
+
+      if (current && files.some(f => f.name === current)) {
+        select.value = current;
+      }
+    } catch {
+      // ignore fetch errors
+    }
+  },
+
+  get autoScroll() {
+    return document.getElementById('log-autoscroll').checked;
+  },
+
+  async tailLog(name) {
+    if (!name) {
+      document.getElementById('log-viewer-content').innerHTML = '';
+      document.getElementById('log-viewer-status').textContent = '';
+      return;
+    }
+    try {
+      const res = await fetch(`/api/logs/${encodeURIComponent(name)}?tail=300`);
+      const data = await res.json();
+      const content = document.getElementById('log-viewer-content');
+
+      content.innerHTML = data.lines.map(line => this.formatLine(line)).join('');
+      document.getElementById('log-viewer-status').textContent =
+        `${data.lines.length} / ${data.total} lines`;
+
+      if (this.autoScroll) {
+        content.scrollTop = content.scrollHeight;
+      }
+      this.lastLineCount = data.total;
+    } catch {
+      document.getElementById('log-viewer-status').textContent = 'error loading';
+    }
+  },
+
+  formatLine(line) {
+    // Try to parse as JSON log entry
+    try {
+      const entry = JSON.parse(line);
+      const ts = entry.ts ? `<span class="log-ts">${escHtml(entry.ts.split('T')[1]?.split('.')[0] || entry.ts)}</span> ` : '';
+      const comp = entry.component ? `<span class="log-component">[${escHtml(entry.component)}]</span> ` : '';
+      const event = entry.event ? `<span class="log-component">[${escHtml(entry.event)}]</span> ` : '';
+      const msg = entry.msg || '';
+      const msgCls = msg.includes('error') ? 'log-error' : (msg.includes('SAFE') ? 'log-safe' : 'log-msg');
+      const msgHtml = msg ? `<span class="${msgCls}">${escHtml(msg)}</span> ` : '';
+      const data = entry.data ? `<span class="log-ts">${escHtml(JSON.stringify(entry.data))}</span>` : '';
+      return `<div class="log-line">${ts}${comp}${event}${msgHtml}${data}</div>`;
+    } catch {
+      // Plain text line
+      return `<div class="log-line">${escHtml(line)}</div>`;
+    }
+  },
+
+  start(name) {
+    this.stop();
+    this.currentLog = name;
+    this.tailLog(name);
+    if (name) {
+      this.pollTimer = setInterval(() => this.tailLog(name), 3000);
+    }
+  },
+
+  stop() {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+  },
+};
+
+document.getElementById('log-file-select').addEventListener('change', (e) => {
+  LogViewer.start(e.target.value);
+});
+
+// Load log list on startup and refresh periodically
+LogViewer.loadLogList();
+setInterval(() => LogViewer.loadLogList(), 30000);
+
 // --- Initialize Panel Manager ---
 PanelManager.init();
 PanelManager.register('console', 'Console', document.getElementById('panel-console'), 'dock-left-top');
 PanelManager.register('chat', 'Chat', document.getElementById('panel-chat'), 'dock-left-bottom');
 PanelManager.register('containers', 'Containers', document.getElementById('panel-containers'), 'dock-right-top');
+PanelManager.register('logs', 'Logs', document.getElementById('panel-logs'), 'dock-right-bottom');
+PanelManager.register('pentest', 'Pentest', document.getElementById('panel-pentest'), 'dock-right-bottom');
 PanelManager.restoreLayout();
 PanelManager.renderAllTabs();
+
+// --- Pentest Panel ---
+
+const Pentest = {
+  running: false,
+  currentProbe: null,
+  _tailing: true,
+
+  /** Check if pentest-content is scrolled to (near) bottom */
+  isAtBottom() {
+    const el = document.getElementById('pentest-content');
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+  },
+
+  /** Scroll to bottom and activate tailing */
+  scrollToBottom() {
+    const el = document.getElementById('pentest-content');
+    if (el) el.scrollTop = el.scrollHeight;
+    this._tailing = true;
+    this.updateScrollBtnState();
+  },
+
+  /** Scroll to top and deactivate tailing */
+  scrollToTop() {
+    const el = document.getElementById('pentest-content');
+    if (el) el.scrollTop = 0;
+    this._tailing = false;
+    this.updateScrollBtnState();
+  },
+
+  /** Auto-scroll if tailing */
+  maybeScroll() {
+    if (this._tailing) {
+      const el = document.getElementById('pentest-content');
+      if (el) el.scrollTop = el.scrollHeight;
+    }
+  },
+
+  /** Update the down-chevron button style to show tail state */
+  updateScrollBtnState() {
+    const btn = document.getElementById('pentest-scroll-bottom');
+    if (btn) {
+      btn.classList.toggle('tailing', this._tailing);
+    }
+  },
+
+  init() {
+    // Run buttons
+    for (const btn of document.querySelectorAll('[id^="pentest-run-"]')) {
+      btn.addEventListener('click', () => {
+        if (this.running) return;
+        const probe = btn.id.replace('pentest-run-', '');
+        this.runProbe(probe);
+      });
+    }
+
+    // Result selector
+    document.getElementById('pentest-result-select').addEventListener('change', (e) => {
+      const file = e.target.value;
+      if (file) this.loadResult(file);
+    });
+
+    // Scroll buttons
+    document.getElementById('pentest-scroll-top').addEventListener('click', () => this.scrollToTop());
+    document.getElementById('pentest-scroll-bottom').addEventListener('click', () => this.scrollToBottom());
+
+    // Smart auto-tail: stop tailing when user scrolls up, resume when they scroll back to bottom
+    document.getElementById('pentest-content').addEventListener('scroll', () => {
+      const wasT = this._tailing;
+      this._tailing = this.isAtBottom();
+      if (wasT !== this._tailing) this.updateScrollBtnState();
+    });
+
+    // Load result list on init
+    this.loadResultList();
+    this.updateScrollBtnState();
+  },
+
+  async loadResultList() {
+    try {
+      const res = await fetch('/api/pentest/results');
+      if (!res.ok) return;
+      const files = await res.json();
+      const select = document.getElementById('pentest-result-select');
+      // Keep first option
+      select.innerHTML = '<option value="">select result...</option>';
+      for (const f of files) {
+        const opt = document.createElement('option');
+        opt.value = f.name;
+        opt.textContent = `${f.probe} — ${f.date}`;
+        select.appendChild(opt);
+      }
+    } catch {}
+  },
+
+  async loadResult(filename) {
+    try {
+      const res = await fetch(`/api/pentest/results/${encodeURIComponent(filename)}`);
+      if (!res.ok) return;
+      const report = await res.json();
+      this.renderReport(report);
+    } catch (err) {
+      document.getElementById('pentest-content').innerHTML =
+        `<div style="color: #ef4444; padding: 12px;">Error loading result: ${err.message}</div>`;
+    }
+  },
+
+  runProbe(probe) {
+    if (this.running) return;
+    this.running = true;
+    this.currentProbe = probe;
+    this._tailing = true;
+    this.updateScrollBtnState();
+
+    // Update UI
+    for (const btn of document.querySelectorAll('[id^="pentest-run-"]')) {
+      btn.classList.add('running');
+    }
+    document.getElementById('pentest-status').textContent = `running ${probe}...`;
+    document.getElementById('pentest-content').innerHTML =
+      '<div class="pentest-stream-log" id="pentest-stream"></div>';
+
+    // Send command
+    ws.send(JSON.stringify({
+      action: 'pentest_run',
+      containerId: '_pentest',
+      data: { probe },
+    }));
+
+    logCommand(`pentest ${probe} started`, 'system');
+  },
+
+  handleLine(data) {
+    if (data.logFile) {
+      this.currentLogFile = data.logFile;
+    }
+
+    // Skip the initial system line — it's just metadata
+    if (data.technique === 'system') return;
+
+    const stream = document.getElementById('pentest-stream');
+    if (!stream) return;
+
+    if (data.outcome === 'bypassed' && data.payload) {
+      // Full detail card for bypassed results
+      const card = document.createElement('div');
+      card.className = 'pentest-bypassed-item';
+      card.innerHTML = `
+        <div class="technique">✗ ${escapeHtml(data.technique || '')} <span style="color: #666; font-weight: normal;">${escapeHtml(data.id || '')} — ${data.latency_ms || 0}ms</span></div>
+        <div class="payload">${escapeHtml(data.payload || '')}</div>
+        ${data.response ? `<div class="response">${escapeHtml(data.response || '')}</div>` : ''}
+      `;
+      stream.appendChild(card);
+    } else {
+      const div = document.createElement('div');
+      div.className = `pentest-stream-line ${data.outcome || ''}`;
+      const icon = data.outcome === 'bypassed' ? '✗' : data.outcome === 'detected' ? '✓' : data.outcome === 'partial' ? '~' : '!';
+      div.textContent = `${icon} ${(data.technique || '').padEnd(22)} ${(data.outcome || '').padEnd(10)} ${data.latency_ms || 0}ms`;
+      stream.appendChild(div);
+    }
+    this.maybeScroll();
+  },
+
+  handleComplete(data) {
+    this.running = false;
+    this.currentProbe = null;
+
+    for (const btn of document.querySelectorAll('[id^="pentest-run-"]')) {
+      btn.classList.remove('running');
+    }
+    document.getElementById('pentest-status').textContent = '';
+
+    if (data.report) {
+      this.renderReport(data.report);
+      logCommand(`pentest complete: ${data.report.summary.bypassed}/${data.report.summary.total} bypassed (${(data.report.summary.bypassRate * 100).toFixed(1)}%)`,
+        data.report.summary.bypassRate > 0.3 ? 'error' : data.report.summary.bypassRate > 0.1 ? 'system' : 'success');
+    }
+
+    // Refresh result list
+    this.loadResultList();
+  },
+
+  handleError(data) {
+    this.running = false;
+    this.currentProbe = null;
+
+    for (const btn of document.querySelectorAll('[id^="pentest-run-"]')) {
+      btn.classList.remove('running');
+    }
+    document.getElementById('pentest-status').textContent = '';
+    logCommand(`pentest error: ${data.error}`, 'error');
+  },
+
+  renderReport(report) {
+    const s = report.summary;
+    const bypassPct = (s.bypassRate * 100).toFixed(1);
+    const bypassClass = s.bypassRate > 0.3 ? 'danger' : s.bypassRate > 0.1 ? 'warn' : 'safe';
+
+    // Group results by technique
+    const byTech = {};
+    for (const r of report.results) {
+      const t = r.payload.technique;
+      if (!byTech[t]) byTech[t] = { total: 0, bypassed: 0 };
+      byTech[t].total++;
+      if (r.outcome === 'bypassed') byTech[t].bypassed++;
+    }
+
+    const bypassed = report.results.filter(r => r.outcome === 'bypassed');
+
+    let html = `
+      <div class="pentest-summary">
+        <div class="pentest-stat">
+          <div class="label">Total</div>
+          <div class="value">${s.total}</div>
+        </div>
+        <div class="pentest-stat">
+          <div class="label">Detected</div>
+          <div class="value safe">${s.detected}</div>
+        </div>
+        <div class="pentest-stat">
+          <div class="label">Bypassed</div>
+          <div class="value ${bypassClass}">${s.bypassed}</div>
+        </div>
+        <div class="pentest-stat">
+          <div class="label">Bypass Rate</div>
+          <div class="value ${bypassClass}">${bypassPct}%</div>
+        </div>
+      </div>
+
+      <div style="color: #666; font-size: 10px; margin-bottom: 8px;">
+        ${report.probe} &middot; ${report.startedAt} &mdash; ${report.completedAt}
+      </div>
+    `;
+
+    // Technique breakdown bars
+    const techEntries = Object.entries(byTech).sort((a, b) => (b[1].bypassed / b[1].total) - (a[1].bypassed / a[1].total));
+    for (const [name, tech] of techEntries) {
+      const pct = tech.total > 0 ? (tech.bypassed / tech.total * 100) : 0;
+      const barClass = pct > 30 ? 'danger' : pct > 10 ? 'warn' : 'safe';
+      const barWidth = Math.max(pct, 2);
+      html += `
+        <div class="pentest-technique-row">
+          <span class="name">${name}</span>
+          <div class="bar-wrap"><div class="bar ${barClass}" style="width: ${barWidth}%"></div></div>
+          <span class="pct" style="color: ${pct > 0 ? '#ef4444' : '#4ade80'}">${pct.toFixed(0)}%</span>
+        </div>
+      `;
+    }
+
+    // Bypassed details
+    if (bypassed.length > 0) {
+      html += '<div class="pentest-bypassed-list"><div style="color: #ef4444; font-size: 11px; font-weight: bold; margin-bottom: 6px;">Bypassed Payloads</div>';
+      for (const r of bypassed) {
+        const payload = (r.payload.content || '').slice(0, 200);
+        const response = (r.response || '').slice(0, 150);
+        html += `
+          <div class="pentest-bypassed-item">
+            <div class="technique">${r.payload.technique} <span style="color: #666; font-weight: normal;">${r.payload.id}</span></div>
+            <div class="payload">${escapeHtml(payload)}</div>
+            ${response ? `<div class="response">${escapeHtml(response)}</div>` : ''}
+          </div>
+        `;
+      }
+      html += '</div>';
+    }
+
+    document.getElementById('pentest-content').innerHTML = html;
+  },
+};
+
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+Pentest.init();
 
 connect();
 </script>
