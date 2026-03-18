@@ -924,6 +924,67 @@
 
   .canary-counts .safe-count { color: #4ade80; }
   .canary-counts .flag-count { color: #ef4444; }
+
+  /* --- Usage Widget --- */
+  #usage-bar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 6px 16px;
+    border-bottom: 1px solid #333;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  #usage-bar:hover { background: #1e1e38; }
+
+  #usage-bar.error { opacity: 0.5; }
+
+  .usage-meter {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .usage-label {
+    color: #777;
+    font-size: 11px;
+    min-width: 24px;
+  }
+
+  .usage-track {
+    width: 80px;
+    height: 8px;
+    background: #252540;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .usage-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.5s ease, background-color 0.5s ease;
+  }
+
+  .usage-fill.safe { background: #4ade80; }
+  .usage-fill.warn { background: #fbbf24; }
+  .usage-fill.danger { background: #ef4444; }
+
+  .usage-pct {
+    font-size: 11px;
+    min-width: 32px;
+    text-align: right;
+  }
+
+  .usage-pct.safe { color: #4ade80; }
+  .usage-pct.warn { color: #fbbf24; }
+  .usage-pct.danger { color: #ef4444; }
+
+  .usage-reset {
+    color: #555;
+    font-size: 10px;
+    margin-left: auto;
+  }
 </style>
 </head>
 <body>
@@ -939,6 +1000,19 @@
               <span id="pipeline-status" class="idle">idle</span>
               <button id="supervisor-menu-btn">&#9662;</button>
             </div>
+          </div>
+          <div id="usage-bar" title="Claude.ai usage — click to refresh">
+            <div class="usage-meter">
+              <span class="usage-label">5h</span>
+              <div class="usage-track"><div class="usage-fill" id="usage-5h-fill"></div></div>
+              <span class="usage-pct" id="usage-5h-pct">--</span>
+            </div>
+            <div class="usage-meter">
+              <span class="usage-label">7d</span>
+              <div class="usage-track"><div class="usage-fill" id="usage-7d-fill"></div></div>
+              <span class="usage-pct" id="usage-7d-pct">--</span>
+            </div>
+            <span class="usage-reset" id="usage-reset-time"></span>
           </div>
           <div id="thread-list"></div>
           <div id="schedule-list"></div>
@@ -2044,6 +2118,11 @@ function handleStateSync(data) {
       logCommand(`${scheduleData.length} schedule(s) active`, 'system');
     }
   }
+
+  // Restore usage
+  if (data.usage) {
+    Usage.render(data.usage);
+  }
 }
 
 // --- Canary tracking ---
@@ -2784,6 +2863,78 @@ function escapeHtml(s) {
 }
 
 Pentest.init();
+
+// --- Usage Widget ---
+
+const Usage = {
+  pollInterval: 60000, // read every 60s (Minibot.app fetches every 5min)
+  timer: null,
+
+  init() {
+    this.poll();
+    this.timer = setInterval(() => this.poll(), this.pollInterval);
+    document.getElementById('usage-bar').addEventListener('click', () => this.poll());
+  },
+
+  async poll() {
+    try {
+      const res = await fetch('/api/claude-usage');
+      if (!res.ok) throw new Error(`http ${res.status}`);
+      const snap = await res.json();
+      this.render(snap);
+    } catch {
+      document.getElementById('usage-bar').classList.add('error');
+    }
+  },
+
+  render(snap) {
+    const bar = document.getElementById('usage-bar');
+    if (!snap.data) {
+      bar.classList.add('error');
+      document.getElementById('usage-5h-pct').textContent = snap.error || '--';
+      document.getElementById('usage-7d-pct').textContent = '';
+      return;
+    }
+
+    bar.classList.remove('error');
+    const d = snap.data;
+
+    this.updateMeter('5h', d.five_hour);
+    this.updateMeter('7d', d.seven_day);
+
+    // Show reset time for 5h window
+    const resetEl = document.getElementById('usage-reset-time');
+    if (d.five_hour.resets_at) {
+      const reset = new Date(d.five_hour.resets_at);
+      const now = new Date();
+      const diffMs = reset - now;
+      if (diffMs > 0) {
+        const h = Math.floor(diffMs / 3600000);
+        const m = Math.floor((diffMs % 3600000) / 60000);
+        resetEl.textContent = `resets ${h}h ${m}m`;
+      } else {
+        resetEl.textContent = 'resetting...';
+      }
+    } else {
+      resetEl.textContent = '';
+    }
+  },
+
+  updateMeter(id, limit) {
+    const pct = Math.round(limit.utilization);
+    const cls = pct >= 80 ? 'danger' : pct >= 50 ? 'warn' : 'safe';
+
+    const fill = document.getElementById(`usage-${id}-fill`);
+    fill.style.width = `${Math.min(pct, 100)}%`;
+    fill.className = `usage-fill ${cls}`;
+
+    const label = document.getElementById(`usage-${id}-pct`);
+    label.textContent = `${pct}%`;
+    label.className = `usage-pct ${cls}`;
+  },
+};
+
+Usage.init();
 
 connect();
 </script>

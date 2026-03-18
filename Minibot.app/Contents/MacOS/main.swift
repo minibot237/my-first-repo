@@ -49,11 +49,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
     let dashboardPort = 9100
     var retryTimer: Timer?
+    let usagePoller = UsagePoller()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         startSupervisor()
         createWindow()
         createStatusItem()
+
+        // Start usage poller
+        usagePoller.onUpdate = { [weak self] snapshot in
+            self?.updateUsageDisplay(snapshot)
+        }
+        usagePoller.start()
 
         // Give supervisor a moment to boot, then load dashboard
         retryTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
@@ -64,6 +71,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Supervisor lifecycle
 
     func startSupervisor() {
+        // Kill any stale process holding our dashboard port
+        killProcessOnPort(dashboardPort)
+
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: nodePath)
         proc.arguments = [supervisorScript]
@@ -86,14 +96,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         proc.terminationHandler = { [weak self] process in
             DispatchQueue.main.async {
-                // Auto-restart if it crashed (not if we killed it on quit)
-                if process.terminationReason == .uncaughtSignal && self?.supervisor != nil {
-                    NSLog("Minibot: supervisor crashed (signal %d), restarting...", process.terminationStatus)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                        self?.startSupervisor()
-                        self?.retryTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
-                            self?.tryLoadDashboard(timer: timer)
-                        }
+                // Don't restart if we're quitting (supervisor set to nil in stopSupervisor)
+                guard self?.supervisor != nil else { return }
+
+                let status = process.terminationStatus
+                let reason = process.terminationReason == .uncaughtSignal ? "signal" : "exit"
+                NSLog("Minibot: supervisor died (%@ %d), restarting in 3s...", reason, status)
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    self?.startSupervisor()
+                    self?.retryTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
+                        self?.tryLoadDashboard(timer: timer)
                     }
                 }
             }
@@ -173,18 +186,130 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Status item (menu bar)
 
     func createStatusItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem?.button {
-            button.image = MinibotIcon.menuBarImage()
+            // Build icon shifted down 1px by adding padding at top
+            let original = MinibotIcon.menuBarImage()
+            let shifted = NSImage(size: NSSize(width: original.size.width, height: original.size.height))
+            shifted.lockFocus()
+            original.draw(at: NSPoint(x: 0, y: -1), from: .zero, operation: .sourceOver, fraction: 1.0)
+            shifted.unlockFocus()
+            shifted.isTemplate = true
+            button.image = shifted
+            button.imagePosition = .imageLeading
         }
 
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "Show Dashboard", action: #selector(showDashboard), keyEquivalent: "d"))
         menu.addItem(NSMenuItem.separator())
+
+        let usageItem = NSMenuItem(title: "Usage: --", action: nil, keyEquivalent: "")
+        usageItem.tag = 100 // tag to find it later
+        menu.addItem(usageItem)
+
+        menu.addItem(NSMenuItem(title: "Refresh Usage", action: #selector(refreshUsage), keyEquivalent: "u"))
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Restart Supervisor", action: #selector(restartSupervisor), keyEquivalent: "r"))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit Minibot", action: #selector(quitApp), keyEquivalent: "q"))
         statusItem?.menu = menu
+    }
+
+    // MARK: - Usage display
+
+    /// How far through a window we are (0.0–1.0), based on resets_at
+    func windowElapsedFraction(resetsAt: String?, windowHours: Double) -> Double {
+        guard let resetsAt = resetsAt else { return 0.5 } // unknown → assume midpoint
+
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var resetDate = fmt.date(from: resetsAt)
+        if resetDate == nil {
+            let basic = ISO8601DateFormatter()
+            basic.formatOptions = [.withInternetDateTime]
+            resetDate = basic.date(from: resetsAt)
+        }
+        guard let reset = resetDate else { return 0.5 }
+
+        let windowSeconds = windowHours * 3600
+        let now = Date()
+        let remaining = reset.timeIntervalSince(now)
+        let elapsed = windowSeconds - remaining
+        return max(0, min(1, elapsed / windowSeconds))
+    }
+
+    /// Pace-based color: green if well under pace, yellow within threshold, red over pace
+    let paceThreshold: Double = 20 // pp of yellow band below pace (twiddleable)
+
+    func paceColor(utilization: Double, resetsAt: String?, windowHours: Double) -> NSColor {
+        let fraction = windowElapsedFraction(resetsAt: resetsAt, windowHours: windowHours)
+        let pace = fraction * 100 // expected % at this point in the window
+
+        if utilization > pace {
+            return NSColor(srgbRed: 0.94, green: 0.27, blue: 0.27, alpha: 1) // red
+        } else if utilization > pace - paceThreshold {
+            return NSColor(srgbRed: 0.98, green: 0.75, blue: 0.14, alpha: 1) // yellow
+        } else {
+            return NSColor(srgbRed: 0.29, green: 0.85, blue: 0.50, alpha: 1) // green
+        }
+    }
+
+    func updateUsageDisplay(_ snapshot: UsageSnapshot) {
+        guard let data = snapshot.data else {
+            if let button = statusItem?.button {
+                button.attributedTitle = NSAttributedString(string: "")
+                button.toolTip = snapshot.error ?? "No usage data"
+            }
+            if let menu = statusItem?.menu, let item = menu.item(withTag: 100) {
+                item.title = "Usage: \(snapshot.error ?? "unavailable")"
+            }
+            return
+        }
+
+        let fiveH = Int(data.five_hour.utilization)
+        let sevenD = Int(data.seven_day.utilization)
+
+        let fiveHColor = paceColor(utilization: data.five_hour.utilization, resetsAt: data.five_hour.resets_at, windowHours: 5)
+        let sevenDColor = paceColor(utilization: data.seven_day.utilization, resetsAt: data.seven_day.resets_at, windowHours: 168)
+
+        // Menu bar: "<icon> d:12% w:39%" with per-value coloring
+        if let button = statusItem?.button {
+            let menuFont = NSFont.monospacedDigitSystemFont(ofSize: 16, weight: .medium)
+            let dimAttrs: [NSAttributedString.Key: Any] = [.foregroundColor: NSColor.secondaryLabelColor, .font: menuFont]
+
+            // Center vertically using a paragraph style
+            let paraStyle = NSMutableParagraphStyle()
+            paraStyle.alignment = .center
+
+            let dimAttrsP = dimAttrs.merging([.paragraphStyle: paraStyle]) { _, new in new }
+
+            let offset: CGFloat = -3 // shift text down 3px
+            let str = NSMutableAttributedString()
+            str.append(NSAttributedString(string: " D", attributes: dimAttrsP.merging([.baselineOffset: offset]) { _, n in n }))
+            str.append(NSAttributedString(string: "\(fiveH)%", attributes: [.foregroundColor: fiveHColor, .font: menuFont, .paragraphStyle: paraStyle, .baselineOffset: offset]))
+            str.append(NSAttributedString(string: " W", attributes: dimAttrsP.merging([.baselineOffset: offset]) { _, n in n }))
+            str.append(NSAttributedString(string: "\(sevenD)%", attributes: [.foregroundColor: sevenDColor, .font: menuFont, .paragraphStyle: paraStyle, .baselineOffset: offset]))
+
+            button.attributedTitle = str
+
+            // Tooltip with more detail
+            let frac5 = windowElapsedFraction(resetsAt: data.five_hour.resets_at, windowHours: 5)
+            let frac7 = windowElapsedFraction(resetsAt: data.seven_day.resets_at, windowHours: 168)
+            button.toolTip = "5h: \(fiveH)% (pace: \(Int(frac5 * 100))%)\n7d: \(sevenD)% (pace: \(Int(frac7 * 100))%)"
+        }
+
+        // Dropdown menu detail line
+        if let menu = statusItem?.menu, let item = menu.item(withTag: 100) {
+            var parts = ["5h: \(fiveH)%", "7d: \(sevenD)%"]
+            if let opus = data.seven_day_opus {
+                parts.append("opus: \(Int(opus.utilization))%")
+            }
+            item.title = "Usage: " + parts.joined(separator: " | ")
+        }
+    }
+
+    @objc func refreshUsage() {
+        usagePoller.refresh()
     }
 
     @objc func showDashboard() {
@@ -214,13 +339,234 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 
+    // MARK: - Port cleanup
+
+    func killProcessOnPort(_ port: Int) {
+        let pipe = Pipe()
+        let lsof = Process()
+        lsof.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        lsof.arguments = ["-ti", ":\(port)"]
+        lsof.standardOutput = pipe
+        lsof.standardError = FileHandle.nullDevice
+        try? lsof.run()
+        lsof.waitUntilExit()
+
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        for line in output.components(separatedBy: .newlines) {
+            if let pid = Int32(line.trimmingCharacters(in: .whitespaces)), pid > 0 {
+                NSLog("Minibot: killing stale process on port %d (pid %d)", port, pid)
+                kill(pid, SIGTERM)
+            }
+        }
+
+        if !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Give processes a moment to die
+            usleep(500_000)
+        }
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { window.makeKeyAndOrderFront(nil) }
         return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        usagePoller.stop()
         stopSupervisor()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Claude Usage Poller
+// ---------------------------------------------------------------------------
+
+struct UsageLimit: Codable {
+    let utilization: Double
+    let resets_at: String?
+}
+
+struct UsageData: Codable {
+    let five_hour: UsageLimit
+    let seven_day: UsageLimit
+    let seven_day_sonnet: UsageLimit?
+    let seven_day_opus: UsageLimit?
+    let seven_day_oauth_apps: UsageLimit?
+    let seven_day_cowork: UsageLimit?
+    let extra_usage: UsageLimit?
+}
+
+struct UsageSnapshot: Codable {
+    var data: UsageData?
+    var error: String?
+    var lastFetch: String?
+    var nextFetch: String?
+}
+
+class UsagePoller {
+    private let pollInterval: TimeInterval = 300 // 5 minutes
+    private var timer: Timer?
+    private var sessionKey: String?
+    private var orgId: String?
+    private(set) var snapshot = UsageSnapshot()
+    var onUpdate: ((UsageSnapshot) -> Void)?
+
+    private let cachePath: String = {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return home + "/.minibot/claude-usage.json"
+    }()
+
+    private var secretsDir: String {
+        // workshop/.local/secrets/ — one level up from the repo
+        var url = URL(fileURLWithPath: repoDir)
+        url = url.deletingLastPathComponent()
+        return url.path + "/.local/secrets"
+    }
+
+    func start() {
+        loadCredentials()
+        guard sessionKey != nil, orgId != nil else {
+            NSLog("UsagePoller: missing credentials in %@", secretsDir)
+            snapshot.error = "Missing credentials"
+            persistCache()
+            return
+        }
+
+        NSLog("UsagePoller: starting (every %.0fs)", pollInterval)
+        poll() // immediate first fetch
+        timer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
+            self?.poll()
+        }
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    func refresh() {
+        poll()
+    }
+
+    private func loadCredentials() {
+        let keyPath = secretsDir + "/claude-session-key"
+        let orgPath = secretsDir + "/claude-org-id"
+
+        sessionKey = (try? String(contentsOfFile: keyPath, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        orgId = (try? String(contentsOfFile: orgPath, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func poll() {
+        guard let sessionKey = sessionKey, let orgId = orgId else { return }
+
+        let urlString = "https://claude.ai/api/organizations/\(orgId)/usage"
+        guard let url = URL(string: urlString) else { return }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("*/*", forHTTPHeaderField: "accept")
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.setValue("web_claude_ai", forHTTPHeaderField: "anthropic-client-platform")
+        request.setValue("sessionKey=\(sessionKey)", forHTTPHeaderField: "Cookie")
+        // Identify as a real browser to avoid Cloudflare challenges
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15", forHTTPHeaderField: "User-Agent")
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+
+            let now = self.pacificTimestamp()
+
+            if let error = error {
+                self.snapshot.error = error.localizedDescription
+                self.snapshot.lastFetch = now
+                NSLog("UsagePoller: fetch error: %@", error.localizedDescription)
+                self.persistCache()
+                DispatchQueue.main.async { self.onUpdate?(self.snapshot) }
+                return
+            }
+
+            guard let http = response as? HTTPURLResponse else {
+                self.snapshot.error = "invalid response"
+                self.snapshot.lastFetch = now
+                self.persistCache()
+                DispatchQueue.main.async { self.onUpdate?(self.snapshot) }
+                return
+            }
+
+            // Capture rotated session key
+            if let newKey = self.parseSessionKey(from: http), newKey != sessionKey {
+                self.sessionKey = newKey
+                self.persistSessionKey(newKey)
+                NSLog("UsagePoller: session key rotated")
+            }
+
+            guard (200...299).contains(http.statusCode), let data = data else {
+                self.snapshot.error = "http \(http.statusCode)"
+                self.snapshot.lastFetch = now
+                NSLog("UsagePoller: http error %d", http.statusCode)
+                // Log first 200 chars of body for debugging
+                if let data = data, let body = String(data: data.prefix(200), encoding: .utf8) {
+                    NSLog("UsagePoller: response body: %@", body)
+                }
+                self.persistCache()
+                DispatchQueue.main.async { self.onUpdate?(self.snapshot) }
+                return
+            }
+
+            do {
+                let usage = try JSONDecoder().decode(UsageData.self, from: data)
+                self.snapshot = UsageSnapshot(
+                    data: usage,
+                    error: nil,
+                    lastFetch: now,
+                    nextFetch: nil
+                )
+                self.persistCache()
+                NSLog("UsagePoller: 5h=%.0f%% 7d=%.0f%%",
+                      usage.five_hour.utilization,
+                      usage.seven_day.utilization)
+                DispatchQueue.main.async { self.onUpdate?(self.snapshot) }
+            } catch {
+                self.snapshot.error = "decode: \(error.localizedDescription)"
+                self.snapshot.lastFetch = now
+                NSLog("UsagePoller: decode error: %@", error.localizedDescription)
+                self.persistCache()
+                DispatchQueue.main.async { self.onUpdate?(self.snapshot) }
+            }
+        }.resume()
+    }
+
+    private func parseSessionKey(from response: HTTPURLResponse) -> String? {
+        guard let setCookie = response.value(forHTTPHeaderField: "Set-Cookie") else { return nil }
+        for part in setCookie.components(separatedBy: ";") {
+            let trimmed = part.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("sessionKey=") {
+                return String(trimmed.dropFirst("sessionKey=".count))
+            }
+        }
+        return nil
+    }
+
+    private func persistSessionKey(_ key: String) {
+        let keyPath = secretsDir + "/claude-session-key"
+        try? key.write(toFile: keyPath, atomically: true, encoding: .utf8)
+    }
+
+    private func persistCache() {
+        let dir = (cachePath as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let json = try? encoder.encode(snapshot) {
+            try? json.write(to: URL(fileURLWithPath: cachePath))
+        }
+    }
+
+    private func pacificTimestamp() -> String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        fmt.timeZone = TimeZone(identifier: "America/Los_Angeles")
+        return fmt.string(from: Date())
     }
 }
 

@@ -24,6 +24,7 @@ import { ActionRegistry } from "./transports/actions.js";
 import { TransportRouter } from "./transports/router.js";
 import { TelegramTransport } from "./transports/telegram.js";
 import { Scheduler } from "./scheduler/scheduler.js";
+import { UsageService } from "./usage/service.js";
 
 const RUNTIME = process.env["RUNTIME"] || "apple-containers";
 const CANARY_LOG_PATH = path.join(process.cwd(), "logs", "canary-evaluations.log");
@@ -100,6 +101,9 @@ transportRouter.addTransport(telegramTransport);
 
 // --- Scheduler ---
 const scheduler = new Scheduler(actionRegistry, transportRouter.getTransports());
+
+// --- Usage service ---
+const usageService = new UsageService();
 
 // --- Scheduler actions (Tier 1) ---
 actionRegistry.register({
@@ -884,6 +888,7 @@ async function main() {
     pipelineError,
     trust: trustStore.snapshot(),
     schedules: scheduler.snapshot(),
+    usage: usageService.getSnapshot(),
   }));
 
   log("supervisor ready — dashboard at http://localhost:9100");
@@ -896,12 +901,16 @@ async function main() {
   // Start scheduler (loads definitions from .local/config/schedules/)
   scheduler.start();
 
+  // Start usage polling (non-blocking, non-fatal)
+  usageService.start();
+
   // Auto-start containers in background (non-blocking, non-fatal)
   startContainers();
 
   // Keep process alive, clean shutdown on SIGINT
   process.on("SIGINT", async () => {
     log("shutting down");
+    usageService.stop();
     scheduler.stop();
     transportRouter.stopAll();
     if (activeHandle) {

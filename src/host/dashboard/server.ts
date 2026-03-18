@@ -5,6 +5,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { bus, type DashboardEvent, type DashboardCommand } from "./events.js";
 import { localTimestamp } from "../log.js";
 import type { TrustSnapshot } from "../trust/types.js";
+import type { UsageSnapshot } from "../usage/types.js";
 
 const PORT = parseInt(process.env["DASHBOARD_PORT"] || "9100", 10);
 
@@ -13,6 +14,7 @@ export interface StateSnapshot {
   pipeline: string;
   pipelineError: string | null;
   trust: TrustSnapshot;
+  usage: UsageSnapshot;
 }
 
 export function startDashboard(getSnapshot?: () => StateSnapshot): void {
@@ -128,6 +130,14 @@ export function startDashboard(getSnapshot?: () => StateSnapshot): void {
         res.writeHead(500);
         res.end("Read error");
       }
+      return;
+    }
+
+    // GET /api/claude-usage — current usage snapshot
+    if (url.pathname === "/api/claude-usage" && req.method === "GET") {
+      const snapshot = getSnapshot?.();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(snapshot?.usage ?? { data: null, error: "no snapshot", lastFetch: null, nextFetch: null }));
       return;
     }
 
