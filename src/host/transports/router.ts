@@ -127,7 +127,9 @@ export class TransportRouter {
 
     if (route === "AGENT") {
       // Tier 3: Agent — full Claude Code with tools
-      const framing = classification?.framing ?? "plain_chat";
+      // Non-root users get restricted_chat: web search + conversation only, no file/code access
+      const classifiedFraming = classification?.framing ?? "plain_chat";
+      const framing: AgentFraming = identity.trustLevel < 1.0 ? "restricted_chat" : classifiedFraming;
       await this.dispatchAgent(identity, transportName, text, framing);
       return;
     }
