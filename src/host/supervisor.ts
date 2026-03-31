@@ -1,7 +1,7 @@
 import net from "node:net";
 import path from "node:path";
 import fs from "node:fs";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import {
   encode, makeHelloAck, makeNudge, makeWebFetchResponse,
   MessageReader, type Message,
@@ -221,9 +221,12 @@ actionRegistry.register({
 
 Respond with exactly one JSON object. No other text.
 Example: {"message": "Hello from minibot!"}`,
-  handler: (params) => {
+  handler: (params, context) => {
     const message = String(params.message || "").trim();
     if (!message) return { ok: false, message: "Message text required." };
+
+    const originator = context.sessionId ? `session:${context.sessionId}` : context.identityId;
+    const outbound = `[from: ${originator}]\n${message}`;
 
     // Default: send to all known transports/users
     const transports = transportRouter.getTransports();
@@ -232,7 +235,7 @@ Example: {"message": "Hello from minibot!"}`,
     for (const [tName, transport] of transports) {
       const userIds = identityRegistry.userIdsForTransport(tName);
       for (const userId of userIds) {
-        transport.send(userId, message).catch(err => {
+        transport.send(userId, outbound).catch(err => {
           log("notify send error", { transport: tName, userId, error: (err as Error).message });
         });
         sent.push(`${tName}:${userId}`);
@@ -245,6 +248,49 @@ Example: {"message": "Hello from minibot!"}`,
 
     log("notify sent", { message: message.slice(0, 100), targets: sent });
     return { ok: true, message: `Sent to ${sent.length} target${sent.length > 1 ? "s" : ""}.` };
+  },
+});
+
+// --- Blog publish action (Tier 1) ---
+actionRegistry.register({
+  name: "publish_post",
+  description: "Publish a blog post to notverysmart.com. Use when user says 'post this', 'publish', 'blog this', or sends a message they want published.",
+  minTrust: 1.0,
+  schema: {
+    body: "the text content of the post",
+  },
+  actionParamsPrompt: `The user wants to publish a blog post. Extract the post body from their message.
+The body is everything they want published — keep it exactly as written, preserve their voice.
+Do NOT summarize or edit. If the whole message is the post, use the whole message.
+
+Respond with exactly one JSON object. No other text.
+Example: {"body": "I have opinions about things and I'm not sorry about it"}`,
+  handler: (params) => {
+    const body = String(params.body || "").trim();
+    if (!body) return { ok: false, message: "Post body required." };
+    if (body.length > 10000) return { ok: false, message: "Post too long (10k char limit)." };
+
+    const publishScript = path.resolve(process.env["HOME"] || "~", "minibot/not-a-blog/publish.sh");
+
+    if (!fs.existsSync(publishScript)) {
+      return { ok: false, message: "Blog publish script not found." };
+    }
+
+    try {
+      const result = execFileSync(publishScript, ["human-rants", body], {
+        timeout: 30000,
+        encoding: "utf-8",
+      });
+      log("blog post published", { bodyLength: body.length, result: result.trim() });
+      return { ok: true, message: `Published! ${result.trim()}` };
+    } catch (err) {
+      const msg = (err as Error).message;
+      log("blog publish failed", { error: msg });
+      if (msg.includes("BLOCKED")) {
+        return { ok: false, message: "Post blocked by PII scan. Check for secrets/paths and retry." };
+      }
+      return { ok: false, message: `Publish failed: ${msg.slice(0, 200)}` };
+    }
   },
 });
 
@@ -902,6 +948,21 @@ async function main() {
   scheduler.start();
 
   // Start usage polling (non-blocking, non-fatal)
+  usageService.onAuthError = (error) => {
+    const msg = `⚠️ Claude session cookie expired (${error}). ` +
+      `Refresh it in browser DevTools → Cookies → claude.ai → sessionKey, ` +
+      `then update .local/secrets/claude-session-key`;
+    const transports = transportRouter.getTransports();
+    for (const [tName, transport] of transports) {
+      const userIds = identityRegistry.userIdsForTransport(tName);
+      for (const userId of userIds) {
+        transport.send(userId, msg).catch(err => {
+          log("usage auth alert send error", { transport: tName, error: (err as Error).message });
+        });
+      }
+    }
+    log("usage auth alert sent", { error });
+  };
   usageService.start();
 
   // Auto-start containers in background (non-blocking, non-fatal)
