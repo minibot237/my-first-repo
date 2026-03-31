@@ -141,6 +141,24 @@ export function startDashboard(getSnapshot?: () => StateSnapshot): void {
       return;
     }
 
+    // POST /api/mail-notify — Minibot.app notifies us of new mail
+    if (url.pathname === "/api/mail-notify" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        try {
+          const payload = JSON.parse(body);
+          bus.emit("command", { action: "mail_ingest", containerId: "_mail", data: payload });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } catch {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "bad json" }));
+        }
+      });
+      return;
+    }
+
     // Default: serve dashboard HTML
     if (!fs.existsSync(htmlPath)) {
       res.writeHead(500);

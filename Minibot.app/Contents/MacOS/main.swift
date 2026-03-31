@@ -1,5 +1,6 @@
 import Cocoa
 import WebKit
+import Security
 
 // ---------------------------------------------------------------------------
 // Resolve paths
@@ -16,6 +17,14 @@ let repoDir: String = {
 let distDir = repoDir + "/dist/host"
 let supervisorScript = distDir + "/supervisor.js"
 let logsDir = repoDir + "/logs"
+let imapFetchScript = macosDir + "/imap-fetch.py"
+let emailAccountsPath: String = {
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    return home + "/.minibot/email-accounts.json"
+}()
+let emailIngestBase: String = {
+    return repoDir + "/.local/ingest/email"
+}()
 
 // Find node
 let nodePath: String = {
@@ -39,6 +48,537 @@ let nodePath: String = {
 }()
 
 // ---------------------------------------------------------------------------
+// Keychain helpers
+// ---------------------------------------------------------------------------
+
+enum Keychain {
+    static let service = "com.minibot.email"
+
+    static func save(account: String, password: String) -> Bool {
+        let data = password.data(using: .utf8)!
+        // Delete existing first
+        let deleteQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        SecItemDelete(deleteQuery as CFDictionary)
+
+        let addQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecValueData as String: data,
+        ]
+        let status = SecItemAdd(addQuery as CFDictionary, nil)
+        return status == errSecSuccess
+    }
+
+    static func load(account: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func delete(account: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Email account model
+// ---------------------------------------------------------------------------
+
+struct EmailAccount: Codable {
+    var email: String
+    var imapServer: String
+    var imapPort: Int
+    var username: String
+    var checkIntervalMinutes: Int
+
+    // Keychain key is the email address
+    var keychainKey: String { email }
+}
+
+class EmailAccountStore {
+    var accounts: [EmailAccount] = []
+
+    func load() {
+        guard FileManager.default.fileExists(atPath: emailAccountsPath),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: emailAccountsPath)),
+              let decoded = try? JSONDecoder().decode([EmailAccount].self, from: data) else {
+            return
+        }
+        accounts = decoded
+    }
+
+    func save() {
+        let dir = (emailAccountsPath as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(accounts) {
+            try? data.write(to: URL(fileURLWithPath: emailAccountsPath))
+        }
+    }
+
+    func add(_ account: EmailAccount, password: String) {
+        accounts.append(account)
+        _ = Keychain.save(account: account.keychainKey, password: password)
+        save()
+    }
+
+    func remove(at index: Int) {
+        let account = accounts[index]
+        Keychain.delete(account: account.keychainKey)
+        accounts.remove(at: index)
+        save()
+    }
+
+    func update(at index: Int, account: EmailAccount, password: String?) {
+        let oldKey = accounts[index].keychainKey
+        if oldKey != account.keychainKey {
+            Keychain.delete(account: oldKey)
+        }
+        accounts[index] = account
+        if let pw = password, !pw.isEmpty {
+            _ = Keychain.save(account: account.keychainKey, password: pw)
+        }
+        save()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IMAP Fetcher — runs per-account timers, calls imap-fetch.py, notifies supervisor
+// ---------------------------------------------------------------------------
+
+class IMAPFetcher {
+    let store: EmailAccountStore
+    var timers: [String: Timer] = [:]  // keyed by email
+
+    init(store: EmailAccountStore) {
+        self.store = store
+    }
+
+    func startAll() {
+        stopAll()
+        for account in store.accounts {
+            startTimer(for: account)
+        }
+    }
+
+    func stopAll() {
+        for (_, timer) in timers { timer.invalidate() }
+        timers.removeAll()
+    }
+
+    func restart(for email: String) {
+        timers[email]?.invalidate()
+        timers.removeValue(forKey: email)
+        if let account = store.accounts.first(where: { $0.email == email }) {
+            startTimer(for: account)
+        }
+    }
+
+    private func startTimer(for account: EmailAccount) {
+        // Fire immediately, then on interval
+        fetchMail(for: account)
+        let interval = TimeInterval(account.checkIntervalMinutes * 60)
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            self?.fetchMail(for: account)
+        }
+        timers[account.email] = timer
+    }
+
+    private func fetchMail(for account: EmailAccount) {
+        guard let password = Keychain.load(account: account.keychainKey) else {
+            NSLog("Minibot: no password in keychain for %@", account.email)
+            return
+        }
+
+        let outputDir = emailIngestBase + "/" + account.email
+        try? FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
+
+        DispatchQueue.global(qos: .utility).async {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            proc.arguments = [imapFetchScript, account.imapServer, "\(account.imapPort)", account.username, outputDir]
+            proc.environment = ["IMAP_PASSWORD": password]
+
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = FileHandle.nullDevice
+
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: data, encoding: .utf8) ?? ""
+                NSLog("Minibot: imap-fetch %@ → %@", account.email, output.trimmingCharacters(in: .whitespacesAndNewlines))
+
+                // Parse result and notify supervisor if we got mail
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let fetched = json["fetched"] as? Int, fetched > 0 {
+                    self.notifySupervisor(account: account.email, count: fetched)
+                }
+            } catch {
+                NSLog("Minibot: imap-fetch error for %@: %@", account.email, error.localizedDescription)
+            }
+        }
+    }
+
+    private func notifySupervisor(account: String, count: Int) {
+        guard let url = URL(string: "http://localhost:9100/api/mail-notify") else { return }
+        var request = URLRequest(url: url, timeoutInterval: 5)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["account": account, "count": count]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        URLSession.shared.dataTask(with: request) { _, response, error in
+            if let error = error {
+                NSLog("Minibot: mail-notify failed: %@", error.localizedDescription)
+            } else if let http = response as? HTTPURLResponse {
+                NSLog("Minibot: mail-notify %@ count=%d → %d", account, count, http.statusCode)
+            }
+        }.resume()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Email Accounts Window (AppKit)
+// ---------------------------------------------------------------------------
+
+class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    let store: EmailAccountStore
+    let fetcher: IMAPFetcher
+    var window: NSWindow?
+    var tableView: NSTableView!
+
+    init(store: EmailAccountStore, fetcher: IMAPFetcher) {
+        self.store = store
+        self.fetcher = fetcher
+    }
+
+    func showWindow() {
+        if let existing = window, existing.isVisible {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let w: CGFloat = 700
+        let h: CGFloat = 400
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: w, height: h),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Email Accounts"
+        window.center()
+        window.minSize = NSSize(width: 500, height: 300)
+        window.isReleasedWhenClosed = false
+
+        // --- Table view ---
+        tableView = NSTableView()
+        tableView.headerView = NSTableHeaderView()
+        tableView.usesAlternatingRowBackgroundColors = true
+        tableView.allowsMultipleSelection = false
+
+        let columns: [(String, String, CGFloat)] = [
+            ("email", "Email", 200),
+            ("server", "IMAP Server", 160),
+            ("port", "Port", 50),
+            ("interval", "Check (min)", 80),
+        ]
+        for (id, title, width) in columns {
+            let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
+            col.title = title
+            col.width = width
+            col.minWidth = 40
+            tableView.addTableColumn(col)
+        }
+
+        tableView.dataSource = self
+        tableView.delegate = self
+
+        let scrollView = NSScrollView()
+        scrollView.documentView = tableView
+        scrollView.hasVerticalScroller = true
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+
+        // --- Buttons ---
+        let addButton = NSButton(title: "+", target: self, action: #selector(addAccount))
+        addButton.bezelStyle = .smallSquare
+        addButton.font = NSFont.systemFont(ofSize: 14, weight: .bold)
+
+        let removeButton = NSButton(title: "−", target: self, action: #selector(removeAccount))
+        removeButton.bezelStyle = .smallSquare
+        removeButton.font = NSFont.systemFont(ofSize: 14, weight: .bold)
+
+        let editButton = NSButton(title: "Edit", target: self, action: #selector(editAccount))
+        editButton.bezelStyle = .smallSquare
+
+        let fetchNowButton = NSButton(title: "Fetch Now", target: self, action: #selector(fetchNow))
+        fetchNowButton.bezelStyle = .smallSquare
+
+        let buttonStack = NSStackView(views: [addButton, removeButton, editButton, fetchNowButton])
+        buttonStack.orientation = .horizontal
+        buttonStack.spacing = 4
+        buttonStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let contentView = NSView()
+        contentView.addSubview(scrollView)
+        contentView.addSubview(buttonStack)
+
+        NSLayoutConstraint.activate([
+            scrollView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
+            scrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
+            scrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
+            scrollView.bottomAnchor.constraint(equalTo: buttonStack.topAnchor, constant: -8),
+
+            buttonStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
+            buttonStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
+        ])
+
+        window.contentView = contentView
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        self.window = window
+    }
+
+    // MARK: - Table data source
+
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        return store.accounts.count
+    }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard let col = tableColumn else { return nil }
+        let account = store.accounts[row]
+
+        let text: String
+        switch col.identifier.rawValue {
+        case "email": text = account.email
+        case "server": text = account.imapServer
+        case "port": text = "\(account.imapPort)"
+        case "interval": text = "\(account.checkIntervalMinutes)"
+        default: text = ""
+        }
+
+        let cellId = NSUserInterfaceItemIdentifier("Cell_\(col.identifier.rawValue)")
+        let cell: NSTextField
+        if let existing = tableView.makeView(withIdentifier: cellId, owner: self) as? NSTextField {
+            cell = existing
+        } else {
+            cell = NSTextField(labelWithString: "")
+            cell.identifier = cellId
+            cell.font = NSFont.systemFont(ofSize: 13)
+        }
+        cell.stringValue = text
+        return cell
+    }
+
+    // MARK: - Actions
+
+    @objc func addAccount() {
+        showAccountSheet(account: nil, index: nil)
+    }
+
+    @objc func removeAccount() {
+        let row = tableView.selectedRow
+        guard row >= 0 else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Remove \(store.accounts[row].email)?"
+        alert.informativeText = "This will also remove the password from Keychain."
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            let email = store.accounts[row].email
+            store.remove(at: row)
+            fetcher.timers[email]?.invalidate()
+            fetcher.timers.removeValue(forKey: email)
+            tableView.reloadData()
+        }
+    }
+
+    @objc func editAccount() {
+        let row = tableView.selectedRow
+        guard row >= 0 else { return }
+        showAccountSheet(account: store.accounts[row], index: row)
+    }
+
+    @objc func fetchNow() {
+        let row = tableView.selectedRow
+        guard row >= 0 else { return }
+        let account = store.accounts[row]
+        NSLog("Minibot: manual fetch for %@", account.email)
+        fetcher.restart(for: account.email)
+    }
+
+    // MARK: - Account edit sheet
+
+    func showAccountSheet(account: EmailAccount?, index: Int?) {
+        guard let parentWindow = window else { return }
+
+        let sheet = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 280),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        sheet.title = account == nil ? "Add Email Account" : "Edit Email Account"
+
+        let grid = NSGridView(numberOfColumns: 2, rows: 0)
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        grid.columnSpacing = 12
+        grid.rowSpacing = 10
+        grid.column(at: 0).xPlacement = .trailing
+
+        func makeLabel(_ text: String) -> NSTextField {
+            let label = NSTextField(labelWithString: text)
+            label.font = NSFont.systemFont(ofSize: 13)
+            return label
+        }
+        func makeField(_ value: String, placeholder: String = "", secure: Bool = false) -> NSTextField {
+            let field: NSTextField
+            if secure {
+                field = NSSecureTextField()
+            } else {
+                field = NSTextField()
+            }
+            field.stringValue = value
+            field.placeholderString = placeholder
+            field.font = NSFont.systemFont(ofSize: 13)
+            field.translatesAutoresizingMaskIntoConstraints = false
+            field.widthAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
+            return field
+        }
+
+        let emailField = makeField(account?.email ?? "", placeholder: "minibot@notverysmart.com")
+        let serverField = makeField(account?.imapServer ?? "", placeholder: "mail.notverysmart.com")
+        let portField = makeField(account != nil ? "\(account!.imapPort)" : "993")
+        let usernameField = makeField(account?.username ?? "", placeholder: "minibot@notverysmart.com")
+        let passwordField = makeField("", placeholder: account != nil ? "(unchanged)" : "password", secure: true)
+        let intervalField = makeField(account != nil ? "\(account!.checkIntervalMinutes)" : "1")
+
+        grid.addRow(with: [makeLabel("Email:"), emailField])
+        grid.addRow(with: [makeLabel("IMAP Server:"), serverField])
+        grid.addRow(with: [makeLabel("Port:"), portField])
+        grid.addRow(with: [makeLabel("Username:"), usernameField])
+        grid.addRow(with: [makeLabel("Password:"), passwordField])
+        grid.addRow(with: [makeLabel("Check every (min):"), intervalField])
+
+        let saveButton = NSButton(title: account == nil ? "Add" : "Save", target: nil, action: nil)
+        saveButton.bezelStyle = .rounded
+        saveButton.keyEquivalent = "\r"
+
+        let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
+        cancelButton.bezelStyle = .rounded
+        cancelButton.keyEquivalent = "\u{1b}"
+
+        let buttonRow = NSStackView(views: [cancelButton, saveButton])
+        buttonRow.orientation = .horizontal
+        buttonRow.spacing = 8
+        buttonRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let contentView = NSView()
+        contentView.addSubview(grid)
+        contentView.addSubview(buttonRow)
+
+        NSLayoutConstraint.activate([
+            grid.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 20),
+            grid.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+
+            buttonRow.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 20),
+            buttonRow.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+            buttonRow.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16),
+        ])
+
+        sheet.contentView = contentView
+
+        saveButton.target = self
+        saveButton.action = #selector(sheetSave(_:))
+        cancelButton.target = self
+        cancelButton.action = #selector(sheetCancel(_:))
+
+        // Stash context in the sheet for retrieval
+        objc_setAssociatedObject(sheet, "fields", [emailField, serverField, portField, usernameField, passwordField, intervalField], .OBJC_ASSOCIATION_RETAIN)
+        objc_setAssociatedObject(sheet, "editIndex", index as Any, .OBJC_ASSOCIATION_RETAIN)
+
+        parentWindow.beginSheet(sheet)
+    }
+
+    @objc func sheetSave(_ sender: NSButton) {
+        guard let sheet = sender.window,
+              let parent = sheet.sheetParent,
+              let fields = objc_getAssociatedObject(sheet, "fields") as? [NSTextField] else { return }
+
+        let editIndex = objc_getAssociatedObject(sheet, "editIndex") as? Int
+
+        let email = fields[0].stringValue.trimmingCharacters(in: .whitespaces)
+        let server = fields[1].stringValue.trimmingCharacters(in: .whitespaces)
+        let port = Int(fields[2].stringValue) ?? 993
+        let username = fields[3].stringValue.trimmingCharacters(in: .whitespaces)
+        let password = fields[4].stringValue
+        let interval = Int(fields[5].stringValue) ?? 1
+
+        guard !email.isEmpty, !server.isEmpty, !username.isEmpty else {
+            let alert = NSAlert()
+            alert.messageText = "Email, server, and username are required."
+            alert.runModal()
+            return
+        }
+
+        let account = EmailAccount(
+            email: email,
+            imapServer: server,
+            imapPort: port,
+            username: username,
+            checkIntervalMinutes: max(1, interval)
+        )
+
+        if let idx = editIndex {
+            store.update(at: idx, account: account, password: password.isEmpty ? nil : password)
+        } else {
+            guard !password.isEmpty else {
+                let alert = NSAlert()
+                alert.messageText = "Password is required for new accounts."
+                alert.runModal()
+                return
+            }
+            store.add(account, password: password)
+        }
+
+        parent.endSheet(sheet)
+        tableView.reloadData()
+        fetcher.restart(for: email)
+    }
+
+    @objc func sheetCancel(_ sender: NSButton) {
+        guard let sheet = sender.window, let parent = sheet.sheetParent else { return }
+        parent.endSheet(sheet)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // App Delegate
 // ---------------------------------------------------------------------------
 
@@ -49,22 +589,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
     let dashboardPort = 9100
     var retryTimer: Timer?
-    let usagePoller = UsagePoller()
+    let accountStore = EmailAccountStore()
+    var imapFetcher: IMAPFetcher!
+    var emailWindowController: EmailAccountsWindowController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Load email accounts and start fetcher
+        accountStore.load()
+        imapFetcher = IMAPFetcher(store: accountStore)
+        emailWindowController = EmailAccountsWindowController(store: accountStore, fetcher: imapFetcher)
+
         startSupervisor()
         createWindow()
         createStatusItem()
 
-        // Start usage poller
-        usagePoller.onUpdate = { [weak self] snapshot in
-            self?.updateUsageDisplay(snapshot)
-        }
-        usagePoller.start()
-
         // Give supervisor a moment to boot, then load dashboard
         retryTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
             self?.tryLoadDashboard(timer: timer)
+        }
+
+        // Start IMAP fetchers after a short delay (let supervisor start first)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            self?.imapFetcher.startAll()
+            NSLog("Minibot: IMAP fetchers started for %d accounts", self?.accountStore.accounts.count ?? 0)
         }
     }
 
@@ -186,9 +733,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Status item (menu bar)
 
     func createStatusItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem?.button {
-            // Build icon shifted down 1px by adding padding at top
             let original = MinibotIcon.menuBarImage()
             let shifted = NSImage(size: NSSize(width: original.size.width, height: original.size.height))
             shifted.lockFocus()
@@ -196,18 +742,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             shifted.unlockFocus()
             shifted.isTemplate = true
             button.image = shifted
-            button.imagePosition = .imageLeading
         }
 
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "Show Dashboard", action: #selector(showDashboard), keyEquivalent: "d"))
-        menu.addItem(NSMenuItem.separator())
-
-        let usageItem = NSMenuItem(title: "Usage: --", action: nil, keyEquivalent: "")
-        usageItem.tag = 100 // tag to find it later
-        menu.addItem(usageItem)
-
-        menu.addItem(NSMenuItem(title: "Refresh Usage", action: #selector(refreshUsage), keyEquivalent: "u"))
+        menu.addItem(NSMenuItem(title: "Email Accounts...", action: #selector(showEmailAccounts), keyEquivalent: "e"))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Restart Supervisor", action: #selector(restartSupervisor), keyEquivalent: "r"))
         menu.addItem(NSMenuItem.separator())
@@ -215,106 +754,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.menu = menu
     }
 
-    // MARK: - Usage display
-
-    /// How far through a window we are (0.0–1.0), based on resets_at
-    func windowElapsedFraction(resetsAt: String?, windowHours: Double) -> Double {
-        guard let resetsAt = resetsAt else { return 0.5 } // unknown → assume midpoint
-
-        let fmt = ISO8601DateFormatter()
-        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        var resetDate = fmt.date(from: resetsAt)
-        if resetDate == nil {
-            let basic = ISO8601DateFormatter()
-            basic.formatOptions = [.withInternetDateTime]
-            resetDate = basic.date(from: resetsAt)
-        }
-        guard let reset = resetDate else { return 0.5 }
-
-        let windowSeconds = windowHours * 3600
-        let now = Date()
-        let remaining = reset.timeIntervalSince(now)
-        let elapsed = windowSeconds - remaining
-        return max(0, min(1, elapsed / windowSeconds))
-    }
-
-    /// Pace-based color: green if well under pace, yellow within threshold, red over pace
-    let paceThreshold: Double = 20 // pp of yellow band below pace (twiddleable)
-
-    func paceColor(utilization: Double, resetsAt: String?, windowHours: Double) -> NSColor {
-        let fraction = windowElapsedFraction(resetsAt: resetsAt, windowHours: windowHours)
-        let pace = fraction * 100 // expected % at this point in the window
-
-        if utilization > pace {
-            return NSColor(srgbRed: 0.94, green: 0.27, blue: 0.27, alpha: 1) // red
-        } else if utilization > pace - paceThreshold {
-            return NSColor(srgbRed: 0.98, green: 0.75, blue: 0.14, alpha: 1) // yellow
-        } else {
-            return NSColor(srgbRed: 0.29, green: 0.85, blue: 0.50, alpha: 1) // green
-        }
-    }
-
-    func updateUsageDisplay(_ snapshot: UsageSnapshot) {
-        guard let data = snapshot.data else {
-            if let button = statusItem?.button {
-                button.attributedTitle = NSAttributedString(string: "")
-                button.toolTip = snapshot.error ?? "No usage data"
-            }
-            if let menu = statusItem?.menu, let item = menu.item(withTag: 100) {
-                item.title = "Usage: \(snapshot.error ?? "unavailable")"
-            }
-            return
-        }
-
-        let fiveH = Int(data.five_hour.utilization)
-        let sevenD = Int(data.seven_day.utilization)
-
-        let fiveHColor = paceColor(utilization: data.five_hour.utilization, resetsAt: data.five_hour.resets_at, windowHours: 5)
-        let sevenDColor = paceColor(utilization: data.seven_day.utilization, resetsAt: data.seven_day.resets_at, windowHours: 168)
-
-        // Menu bar: "<icon> d:12% w:39%" with per-value coloring
-        if let button = statusItem?.button {
-            let menuFont = NSFont.monospacedDigitSystemFont(ofSize: 16, weight: .medium)
-            let dimAttrs: [NSAttributedString.Key: Any] = [.foregroundColor: NSColor.secondaryLabelColor, .font: menuFont]
-
-            // Center vertically using a paragraph style
-            let paraStyle = NSMutableParagraphStyle()
-            paraStyle.alignment = .center
-
-            let dimAttrsP = dimAttrs.merging([.paragraphStyle: paraStyle]) { _, new in new }
-
-            let offset: CGFloat = -3 // shift text down 3px
-            let str = NSMutableAttributedString()
-            str.append(NSAttributedString(string: " D", attributes: dimAttrsP.merging([.baselineOffset: offset]) { _, n in n }))
-            str.append(NSAttributedString(string: "\(fiveH)%", attributes: [.foregroundColor: fiveHColor, .font: menuFont, .paragraphStyle: paraStyle, .baselineOffset: offset]))
-            str.append(NSAttributedString(string: " W", attributes: dimAttrsP.merging([.baselineOffset: offset]) { _, n in n }))
-            str.append(NSAttributedString(string: "\(sevenD)%", attributes: [.foregroundColor: sevenDColor, .font: menuFont, .paragraphStyle: paraStyle, .baselineOffset: offset]))
-
-            button.attributedTitle = str
-
-            // Tooltip with more detail
-            let frac5 = windowElapsedFraction(resetsAt: data.five_hour.resets_at, windowHours: 5)
-            let frac7 = windowElapsedFraction(resetsAt: data.seven_day.resets_at, windowHours: 168)
-            button.toolTip = "5h: \(fiveH)% (pace: \(Int(frac5 * 100))%)\n7d: \(sevenD)% (pace: \(Int(frac7 * 100))%)"
-        }
-
-        // Dropdown menu detail line
-        if let menu = statusItem?.menu, let item = menu.item(withTag: 100) {
-            var parts = ["5h: \(fiveH)%", "7d: \(sevenD)%"]
-            if let opus = data.seven_day_opus {
-                parts.append("opus: \(Int(opus.utilization))%")
-            }
-            item.title = "Usage: " + parts.joined(separator: " | ")
-        }
-    }
-
-    @objc func refreshUsage() {
-        usagePoller.refresh()
-    }
-
     @objc func showDashboard() {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func showEmailAccounts() {
+        emailWindowController.showWindow()
     }
 
     @objc func restartSupervisor() {
@@ -371,202 +817,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        usagePoller.stop()
+        imapFetcher.stopAll()
         stopSupervisor()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Claude Usage Poller
-// ---------------------------------------------------------------------------
-
-struct UsageLimit: Codable {
-    let utilization: Double
-    let resets_at: String?
-}
-
-struct UsageData: Codable {
-    let five_hour: UsageLimit
-    let seven_day: UsageLimit
-    let seven_day_sonnet: UsageLimit?
-    let seven_day_opus: UsageLimit?
-    let seven_day_oauth_apps: UsageLimit?
-    let seven_day_cowork: UsageLimit?
-    let extra_usage: UsageLimit?
-}
-
-struct UsageSnapshot: Codable {
-    var data: UsageData?
-    var error: String?
-    var lastFetch: String?
-    var nextFetch: String?
-}
-
-class UsagePoller {
-    private let pollInterval: TimeInterval = 300 // 5 minutes
-    private var timer: Timer?
-    private var sessionKey: String?
-    private var orgId: String?
-    private(set) var snapshot = UsageSnapshot()
-    var onUpdate: ((UsageSnapshot) -> Void)?
-
-    private let cachePath: String = {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return home + "/.minibot/claude-usage.json"
-    }()
-
-    private var secretsDir: String {
-        // workshop/.local/secrets/ — one level up from the repo
-        var url = URL(fileURLWithPath: repoDir)
-        url = url.deletingLastPathComponent()
-        return url.path + "/.local/secrets"
-    }
-
-    func start() {
-        loadCredentials()
-        guard sessionKey != nil, orgId != nil else {
-            NSLog("UsagePoller: missing credentials in %@", secretsDir)
-            snapshot.error = "Missing credentials"
-            persistCache()
-            return
-        }
-
-        NSLog("UsagePoller: starting (every %.0fs)", pollInterval)
-        poll() // immediate first fetch
-        timer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
-            self?.poll()
-        }
-    }
-
-    func stop() {
-        timer?.invalidate()
-        timer = nil
-    }
-
-    func refresh() {
-        poll()
-    }
-
-    private func loadCredentials() {
-        let keyPath = secretsDir + "/claude-session-key"
-        let orgPath = secretsDir + "/claude-org-id"
-
-        sessionKey = (try? String(contentsOfFile: keyPath, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
-        orgId = (try? String(contentsOfFile: orgPath, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func poll() {
-        guard let sessionKey = sessionKey, let orgId = orgId else { return }
-
-        let urlString = "https://claude.ai/api/organizations/\(orgId)/usage"
-        guard let url = URL(string: urlString) else { return }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("*/*", forHTTPHeaderField: "accept")
-        request.setValue("application/json", forHTTPHeaderField: "content-type")
-        request.setValue("web_claude_ai", forHTTPHeaderField: "anthropic-client-platform")
-        request.setValue("sessionKey=\(sessionKey)", forHTTPHeaderField: "Cookie")
-        // Identify as a real browser to avoid Cloudflare challenges
-        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15", forHTTPHeaderField: "User-Agent")
-
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            guard let self = self else { return }
-
-            let now = self.pacificTimestamp()
-
-            if let error = error {
-                self.snapshot.error = error.localizedDescription
-                self.snapshot.lastFetch = now
-                NSLog("UsagePoller: fetch error: %@", error.localizedDescription)
-                self.persistCache()
-                DispatchQueue.main.async { self.onUpdate?(self.snapshot) }
-                return
-            }
-
-            guard let http = response as? HTTPURLResponse else {
-                self.snapshot.error = "invalid response"
-                self.snapshot.lastFetch = now
-                self.persistCache()
-                DispatchQueue.main.async { self.onUpdate?(self.snapshot) }
-                return
-            }
-
-            // Capture rotated session key
-            if let newKey = self.parseSessionKey(from: http), newKey != sessionKey {
-                self.sessionKey = newKey
-                self.persistSessionKey(newKey)
-                NSLog("UsagePoller: session key rotated")
-            }
-
-            guard (200...299).contains(http.statusCode), let data = data else {
-                self.snapshot.error = "http \(http.statusCode)"
-                self.snapshot.lastFetch = now
-                NSLog("UsagePoller: http error %d", http.statusCode)
-                // Log first 200 chars of body for debugging
-                if let data = data, let body = String(data: data.prefix(200), encoding: .utf8) {
-                    NSLog("UsagePoller: response body: %@", body)
-                }
-                self.persistCache()
-                DispatchQueue.main.async { self.onUpdate?(self.snapshot) }
-                return
-            }
-
-            do {
-                let usage = try JSONDecoder().decode(UsageData.self, from: data)
-                self.snapshot = UsageSnapshot(
-                    data: usage,
-                    error: nil,
-                    lastFetch: now,
-                    nextFetch: nil
-                )
-                self.persistCache()
-                NSLog("UsagePoller: 5h=%.0f%% 7d=%.0f%%",
-                      usage.five_hour.utilization,
-                      usage.seven_day.utilization)
-                DispatchQueue.main.async { self.onUpdate?(self.snapshot) }
-            } catch {
-                self.snapshot.error = "decode: \(error.localizedDescription)"
-                self.snapshot.lastFetch = now
-                NSLog("UsagePoller: decode error: %@", error.localizedDescription)
-                self.persistCache()
-                DispatchQueue.main.async { self.onUpdate?(self.snapshot) }
-            }
-        }.resume()
-    }
-
-    private func parseSessionKey(from response: HTTPURLResponse) -> String? {
-        guard let setCookie = response.value(forHTTPHeaderField: "Set-Cookie") else { return nil }
-        for part in setCookie.components(separatedBy: ";") {
-            let trimmed = part.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("sessionKey=") {
-                return String(trimmed.dropFirst("sessionKey=".count))
-            }
-        }
-        return nil
-    }
-
-    private func persistSessionKey(_ key: String) {
-        let keyPath = secretsDir + "/claude-session-key"
-        try? key.write(toFile: keyPath, atomically: true, encoding: .utf8)
-    }
-
-    private func persistCache() {
-        let dir = (cachePath as NSString).deletingLastPathComponent
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let json = try? encoder.encode(snapshot) {
-            try? json.write(to: URL(fileURLWithPath: cachePath))
-        }
-    }
-
-    private func pacificTimestamp() -> String {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
-        fmt.timeZone = TimeZone(identifier: "America/Los_Angeles")
-        return fmt.string(from: Date())
     }
 }
 

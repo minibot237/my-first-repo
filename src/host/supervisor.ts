@@ -298,6 +298,59 @@ Example: {"body": "I have opinions about things and I'm not sorry about it"}`,
 bus.on("command", async (cmd: DashboardCommand) => {
   log("dashboard command", { action: cmd.action, containerId: cmd.containerId });
 
+  if (cmd.action === "mail_ingest") {
+    const { account, count } = cmd.data as { account: string; count: number };
+    log("mail ingest notification", { account, count });
+
+    const ingestDir = path.join(process.cwd(), ".local", "ingest", "email", account);
+    const processedDir = path.join(ingestDir, "processed");
+    fs.mkdirSync(processedDir, { recursive: true });
+
+    if (!fs.existsSync(ingestDir)) {
+      log("mail ingest: directory not found", { dir: ingestDir });
+      return;
+    }
+
+    const files = fs.readdirSync(ingestDir).filter(f => f.endsWith(".eml")).sort();
+    log("mail ingest: found files", { account, count: files.length });
+
+    let processed = 0;
+    let flagged = 0;
+
+    for (const file of files) {
+      const emlPath = path.join(ingestDir, file);
+      try {
+        const result = await processEmail(emlPath);
+        processed++;
+        if (!result.safe) flagged++;
+        // Move to processed/
+        fs.renameSync(emlPath, path.join(processedDir, file));
+      } catch (err) {
+        log("mail ingest: file error", { file, error: (err as Error).message });
+      }
+    }
+
+    log("mail ingest complete", { account, processed, flagged });
+
+    // Notify via Telegram if we got interesting mail
+    if (processed > 0) {
+      const summary = flagged > 0
+        ? `📬 ${account}: ${processed} new email${processed > 1 ? "s" : ""}, ${flagged} flagged by canary`
+        : `📬 ${account}: ${processed} new email${processed > 1 ? "s" : ""}`;
+
+      const transports = transportRouter.getTransports();
+      for (const [tName, transport] of transports) {
+        const userIds = identityRegistry.userIdsForTransport(tName);
+        for (const userId of userIds) {
+          transport.send(userId, summary).catch(err => {
+            log("mail notify send error", { transport: tName, error: (err as Error).message });
+          });
+        }
+      }
+    }
+    return;
+  }
+
   if (cmd.action === "session_create") {
     const { type } = cmd.data as { type: SessionType };
     const session = sessionManager.create(type);
