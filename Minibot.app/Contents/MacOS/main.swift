@@ -26,6 +26,10 @@ let emailAccountsPath: String = {
 let emailIngestBase: String = {
     return repoDir + "/.local/ingest/email"
 }()
+let sendCountersPath: String = {
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    return home + "/.minibot/send-counters.json"
+}()
 
 // Find node
 let nodePath: String = {
@@ -111,12 +115,18 @@ struct EmailAccount: Codable {
     var smtpPort: Int
     var username: String
     var checkIntervalMinutes: Int
+    var accountType: String          // "minibot", "monitored", "outbound"
+    var maxSendsPerHour: Int
+    var maxPerRecipientPerDay: Int
+    var maxSendsPerDay: Int
+    var rejectDuplicates: Bool
 
-    // Keychain key is the email address
     var keychainKey: String { email }
 
-    // Memberwise init
-    init(email: String, imapServer: String, imapPort: Int, smtpServer: String, smtpPort: Int, username: String, checkIntervalMinutes: Int) {
+    init(email: String, imapServer: String, imapPort: Int, smtpServer: String, smtpPort: Int,
+         username: String, checkIntervalMinutes: Int, accountType: String = "monitored",
+         maxSendsPerHour: Int = 0, maxPerRecipientPerDay: Int = 0, maxSendsPerDay: Int = 0,
+         rejectDuplicates: Bool = true) {
         self.email = email
         self.imapServer = imapServer
         self.imapPort = imapPort
@@ -124,9 +134,14 @@ struct EmailAccount: Codable {
         self.smtpPort = smtpPort
         self.username = username
         self.checkIntervalMinutes = checkIntervalMinutes
+        self.accountType = accountType
+        self.maxSendsPerHour = maxSendsPerHour
+        self.maxPerRecipientPerDay = maxPerRecipientPerDay
+        self.maxSendsPerDay = maxSendsPerDay
+        self.rejectDuplicates = rejectDuplicates
     }
 
-    // Migration: default SMTP fields for old configs
+    // Migration: default new fields for old configs
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         email = try c.decode(String.self, forKey: .email)
@@ -136,6 +151,11 @@ struct EmailAccount: Codable {
         smtpPort = try c.decodeIfPresent(Int.self, forKey: .smtpPort) ?? 465
         username = try c.decode(String.self, forKey: .username)
         checkIntervalMinutes = try c.decode(Int.self, forKey: .checkIntervalMinutes)
+        accountType = try c.decodeIfPresent(String.self, forKey: .accountType) ?? "monitored"
+        maxSendsPerHour = try c.decodeIfPresent(Int.self, forKey: .maxSendsPerHour) ?? 0
+        maxPerRecipientPerDay = try c.decodeIfPresent(Int.self, forKey: .maxPerRecipientPerDay) ?? 0
+        maxSendsPerDay = try c.decodeIfPresent(Int.self, forKey: .maxSendsPerDay) ?? 0
+        rejectDuplicates = try c.decodeIfPresent(Bool.self, forKey: .rejectDuplicates) ?? true
     }
 }
 
@@ -186,6 +206,111 @@ class EmailAccountStore {
 }
 
 // ---------------------------------------------------------------------------
+// Flood Counter — tracks outbound sends, enforces per-account rate limits
+// ---------------------------------------------------------------------------
+
+class FloodCounter {
+    struct SendRecord: Codable {
+        let timestamp: TimeInterval
+        let to: String
+        let contentKey: String  // "from|to|subject" for dedup
+    }
+
+    var records: [String: [SendRecord]] = [:]  // keyed by account email
+
+    func load() {
+        guard FileManager.default.fileExists(atPath: sendCountersPath),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: sendCountersPath)),
+              let decoded = try? JSONDecoder().decode([String: [SendRecord]].self, from: data) else {
+            return
+        }
+        records = decoded
+        prune()
+    }
+
+    func save() {
+        let dir = (sendCountersPath as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(records) {
+            try? data.write(to: URL(fileURLWithPath: sendCountersPath))
+        }
+    }
+
+    func canSend(account: EmailAccount, to recipient: String, subject: String) -> (allowed: Bool, reason: String?) {
+        if account.accountType == "monitored" {
+            return (false, "monitored accounts cannot send")
+        }
+
+        let now = Date().timeIntervalSince1970
+        let hourAgo = now - 3600
+        let dayAgo = now - 86400
+        let recs = records[account.email] ?? []
+
+        if account.maxSendsPerHour > 0 {
+            let hourly = recs.filter { $0.timestamp > hourAgo }.count
+            if hourly >= account.maxSendsPerHour {
+                return (false, "hourly cap reached (\(account.maxSendsPerHour)/hr)")
+            }
+        }
+
+        if account.maxSendsPerDay > 0 {
+            let daily = recs.filter { $0.timestamp > dayAgo }.count
+            if daily >= account.maxSendsPerDay {
+                return (false, "daily cap reached (\(account.maxSendsPerDay)/day)")
+            }
+        }
+
+        if account.maxPerRecipientPerDay > 0 {
+            let recipientDaily = recs.filter { $0.to == recipient && $0.timestamp > dayAgo }.count
+            if recipientDaily >= account.maxPerRecipientPerDay {
+                return (false, "per-recipient cap reached (\(account.maxPerRecipientPerDay)/day to \(recipient))")
+            }
+        }
+
+        if account.rejectDuplicates {
+            let contentKey = "\(account.email)|\(recipient)|\(subject)"
+            if recs.contains(where: { $0.contentKey == contentKey && $0.timestamp > hourAgo }) {
+                return (false, "duplicate (same from+to+subject within 1hr)")
+            }
+        }
+
+        return (true, nil)
+    }
+
+    func recordSend(from: String, to: String, subject: String) {
+        let record = SendRecord(
+            timestamp: Date().timeIntervalSince1970,
+            to: to,
+            contentKey: "\(from)|\(to)|\(subject)"
+        )
+        if records[from] == nil { records[from] = [] }
+        records[from]!.append(record)
+        save()
+    }
+
+    func reset(account: String) {
+        records.removeValue(forKey: account)
+        save()
+    }
+
+    func prune() {
+        let dayAgo = Date().timeIntervalSince1970 - 86400
+        for (key, recs) in records {
+            records[key] = recs.filter { $0.timestamp > dayAgo }
+            if records[key]?.isEmpty == true { records.removeValue(forKey: key) }
+        }
+    }
+
+    func stats(for account: String) -> (hourly: Int, daily: Int) {
+        let now = Date().timeIntervalSince1970
+        let recs = records[account] ?? []
+        let hourly = recs.filter { $0.timestamp > now - 3600 }.count
+        let daily = recs.filter { $0.timestamp > now - 86400 }.count
+        return (hourly, daily)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // IMAP Fetcher — runs per-account timers, calls imap-fetch.py, notifies supervisor
 // ---------------------------------------------------------------------------
 
@@ -200,7 +325,7 @@ class IMAPFetcher {
 
     func startAll() {
         stopAll()
-        for account in store.accounts {
+        for account in store.accounts where account.accountType != "outbound" {
             startTimer(for: account)
         }
     }
@@ -213,7 +338,8 @@ class IMAPFetcher {
     func restart(for email: String) {
         timers[email]?.invalidate()
         timers.removeValue(forKey: email)
-        if let account = store.accounts.first(where: { $0.email == email }) {
+        if let account = store.accounts.first(where: { $0.email == email }),
+           account.accountType != "outbound" {
             startTimer(for: account)
         }
     }
@@ -304,6 +430,7 @@ class IMAPFetcher {
 class OutboxPoller {
     let store: EmailAccountStore
     var timer: Timer?
+    var floodCounter: FloodCounter?
 
     init(store: EmailAccountStore) {
         self.store = store
@@ -351,6 +478,30 @@ class OutboxPoller {
             return
         }
 
+        // Type gate: monitored accounts can never send
+        if account.accountType == "monitored" {
+            NSLog("Minibot: outbox — blocked send from monitored account %@", from)
+            confirmDelivery(id: id, ok: false, error: "Cannot send from monitored account \(from)")
+            return
+        }
+
+        // Loop detection: don't send to an address we also monitor
+        if store.accounts.contains(where: { $0.email == to && $0.accountType == "monitored" }) {
+            NSLog("Minibot: outbox — loop detected: %@ → %@", from, to)
+            confirmDelivery(id: id, ok: false, error: "Loop detected: \(to) is a monitored address")
+            return
+        }
+
+        // Flood control
+        if let counter = floodCounter {
+            let (allowed, reason) = counter.canSend(account: account, to: to, subject: subject)
+            if !allowed {
+                NSLog("Minibot: outbox — flood blocked %@ → %@: %@", from, to, reason ?? "")
+                confirmDelivery(id: id, ok: false, error: "Flood control: \(reason ?? "blocked")")
+                return
+            }
+        }
+
         guard let password = Keychain.load(account: account.keychainKey) else {
             NSLog("Minibot: outbox — no password for %@", from)
             confirmDelivery(id: id, ok: false, error: "No password in Keychain for \(from)")
@@ -382,6 +533,7 @@ class OutboxPoller {
 
                 if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let ok = json["ok"] as? Bool, ok {
+                    self?.floodCounter?.recordSend(from: from, to: to, subject: subject)
                     self?.confirmDelivery(id: id, ok: true, error: nil)
                 } else {
                     let err = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String ?? "unknown error"
@@ -422,6 +574,14 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
     private var editIndex: Int? = nil
     private var statusLabel: NSTextField?
     private var dialogStatusLabel: NSTextField?
+    private var editTypePopup: NSPopUpButton?
+    private var editMaxPerHour: NSTextField?
+    private var editMaxPerRecipientPerDay: NSTextField?
+    private var editMaxPerDay: NSTextField?
+    private var editRejectDuplicates: NSButton?
+
+    // Flood counter (set by AppDelegate)
+    var floodCounter: FloodCounter?
 
     // Per-account status: green/yellow/red
     enum AccountStatus { case unknown, checking, ok, error }
@@ -461,10 +621,11 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
 
         let columns: [(String, String, CGFloat)] = [
             ("status", "", 20),
-            ("email", "Email", 200),
-            ("server", "IMAP Server", 160),
+            ("type", "Type", 70),
+            ("email", "Email", 190),
+            ("server", "IMAP Server", 130),
             ("port", "Port", 50),
-            ("interval", "Check (min)", 80),
+            ("interval", "Check (min)", 70),
         ]
         for (id, title, width) in columns {
             let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
@@ -490,8 +651,9 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
         let removeBtn = makeButton("−", action: #selector(removeAccount))
         let editBtn = makeButton("Edit", action: #selector(editAccount))
         let fetchBtn = makeButton("Fetch Now", action: #selector(fetchNow))
+        let resetFloodBtn = makeButton("Reset Flood", action: #selector(resetFlood))
 
-        let buttonBar = NSStackView(views: [addBtn, removeBtn, editBtn, fetchBtn])
+        let buttonBar = NSStackView(views: [addBtn, removeBtn, editBtn, fetchBtn, resetFloodBtn])
         buttonBar.orientation = .horizontal
         buttonBar.spacing = 6
         buttonBar.translatesAutoresizingMaskIntoConstraints = false
@@ -573,6 +735,7 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
 
         let text: String
         switch col.identifier.rawValue {
+        case "type": text = account.accountType
         case "email": text = account.email
         case "server": text = account.imapServer
         case "port": text = "\(account.imapPort)"
@@ -636,6 +799,19 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
         let account = store.accounts[row]
         statusLabel?.stringValue = "Fetching \(account.email)..."
         fetcher.restart(for: account.email)
+    }
+
+    @objc func resetFlood() {
+        let row = tableView.selectedRow
+        guard row >= 0 else {
+            statusLabel?.stringValue = "Select an account first."
+            return
+        }
+        let account = store.accounts[row]
+        floodCounter?.reset(account: account.email)
+        let (h, d) = floodCounter?.stats(for: account.email) ?? (0, 0)
+        statusLabel?.stringValue = "Flood counters reset for \(account.email) (\(h)/hr, \(d)/day)"
+        statusLabel?.textColor = .secondaryLabelColor
     }
 
     @objc func checkConnection() {
@@ -735,11 +911,11 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
         }
     }
 
-    // MARK: - Edit dialog (modal)
+    // MARK: - Edit dialog
 
     func showEditDialog(account: EmailAccount?, index: Int?) {
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 400),
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 590),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -769,6 +945,26 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
             f.widthAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
             return f
         }
+        func makeSeparator(_ text: String) -> NSTextField {
+            let l = NSTextField(labelWithString: "── \(text) ──")
+            l.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+            l.textColor = .secondaryLabelColor
+            return l
+        }
+
+        // Account type popup
+        let typePopup = NSPopUpButton()
+        typePopup.addItems(withTitles: ["minibot", "monitored", "outbound"])
+        typePopup.font = NSFont.systemFont(ofSize: 13)
+        typePopup.translatesAutoresizingMaskIntoConstraints = false
+        typePopup.target = self
+        typePopup.action = #selector(typeChanged(_:))
+        let typeNames = ["minibot", "monitored", "outbound"]
+        let currentType = account?.accountType ?? "monitored"
+        if let idx = typeNames.firstIndex(of: currentType) {
+            typePopup.selectItem(at: idx)
+        }
+        editTypePopup = typePopup
 
         let emailField = makeField(account?.email ?? "", placeholder: "minibot@notverysmart.com")
         let serverField = makeField(account?.imapServer ?? "", placeholder: "mail.notverysmart.com")
@@ -779,7 +975,28 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
         let passwordField = makeField("", placeholder: account != nil ? "(unchanged)" : "password", secure: true)
         let intervalField = makeField(account != nil ? "\(account!.checkIntervalMinutes)" : "1")
 
+        // Flood control fields
+        let maxPerHourField = makeField(account != nil ? "\(account!.maxSendsPerHour)" : "0")
+        let maxPerRecipientField = makeField(account != nil ? "\(account!.maxPerRecipientPerDay)" : "0")
+        let maxPerDayField = makeField(account != nil ? "\(account!.maxSendsPerDay)" : "0")
+        editMaxPerHour = maxPerHourField
+        editMaxPerRecipientPerDay = maxPerRecipientField
+        editMaxPerDay = maxPerDayField
+
+        let rejectDupCheck = NSButton(checkboxWithTitle: "Reject duplicates (same to+subject within 1hr)", target: nil, action: nil)
+        rejectDupCheck.font = NSFont.systemFont(ofSize: 12)
+        rejectDupCheck.state = (account?.rejectDuplicates ?? true) ? .on : .off
+        editRejectDuplicates = rejectDupCheck
+
+        // Disable flood fields for monitored accounts
+        let isMonitored = currentType == "monitored"
+        maxPerHourField.isEnabled = !isMonitored
+        maxPerRecipientField.isEnabled = !isMonitored
+        maxPerDayField.isEnabled = !isMonitored
+        rejectDupCheck.isEnabled = !isMonitored
+
         grid.addRow(with: [makeLabel("Email:"), emailField])
+        grid.addRow(with: [makeLabel("Account Type:"), typePopup])
         grid.addRow(with: [makeLabel("IMAP Server:"), serverField])
         grid.addRow(with: [makeLabel("IMAP Port:"), portField])
         grid.addRow(with: [makeLabel("SMTP Server:"), smtpServerField])
@@ -787,6 +1004,11 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
         grid.addRow(with: [makeLabel("Username:"), usernameField])
         grid.addRow(with: [makeLabel("Password:"), passwordField])
         grid.addRow(with: [makeLabel("Check every (min):"), intervalField])
+        grid.addRow(with: [makeSeparator("Flood Control"), NSView()])  // separator row
+        grid.addRow(with: [makeLabel("Max sends/hour:"), maxPerHourField])
+        grid.addRow(with: [makeLabel("Max/recipient/day:"), maxPerRecipientField])
+        grid.addRow(with: [makeLabel("Max sends/day:"), maxPerDayField])
+        grid.addRow(with: [NSView(), rejectDupCheck])
 
         // Stash fields for save handler — order: email, imap server, imap port, smtp server, smtp port, username, password, interval
         editFields = [emailField, serverField, portField, smtpServerField, smtpPortField, usernameField, passwordField, intervalField]
@@ -837,10 +1059,38 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
         ])
 
         panel.contentView = cv
-
-        // Show as a normal window (not modal — modal blocks target-action dispatch)
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func typeChanged(_ sender: NSPopUpButton) {
+        let types = ["minibot", "monitored", "outbound"]
+        let type = types[sender.indexOfSelectedItem]
+        let isMonitored = type == "monitored"
+
+        editMaxPerHour?.isEnabled = !isMonitored
+        editMaxPerRecipientPerDay?.isEnabled = !isMonitored
+        editMaxPerDay?.isEnabled = !isMonitored
+        editRejectDuplicates?.isEnabled = !isMonitored
+
+        switch type {
+        case "minibot":
+            editMaxPerHour?.stringValue = "20"
+            editMaxPerRecipientPerDay?.stringValue = "10"
+            editMaxPerDay?.stringValue = "100"
+            editRejectDuplicates?.state = .off
+        case "outbound":
+            editMaxPerHour?.stringValue = "10"
+            editMaxPerRecipientPerDay?.stringValue = "3"
+            editMaxPerDay?.stringValue = "50"
+            editRejectDuplicates?.state = .on
+        case "monitored":
+            editMaxPerHour?.stringValue = "0"
+            editMaxPerRecipientPerDay?.stringValue = "0"
+            editMaxPerDay?.stringValue = "0"
+            editRejectDuplicates?.state = .off
+        default: break
+        }
     }
 
     @objc func dialogSave(_ sender: NSButton) {
@@ -853,9 +1103,16 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
         let password = editFields[6].stringValue
         let interval = Int(editFields[7].stringValue) ?? 1
 
-        guard !email.isEmpty, !imapServer.isEmpty, !username.isEmpty else {
+        let typeNames = ["minibot", "monitored", "outbound"]
+        let accountType = typeNames[editTypePopup?.indexOfSelectedItem ?? 1]
+        let maxPerHour = Int(editMaxPerHour?.stringValue ?? "0") ?? 0
+        let maxPerRecipientPerDay = Int(editMaxPerRecipientPerDay?.stringValue ?? "0") ?? 0
+        let maxPerDay = Int(editMaxPerDay?.stringValue ?? "0") ?? 0
+        let rejectDuplicates = editRejectDuplicates?.state == .on
+
+        guard !email.isEmpty else {
             let alert = NSAlert()
-            alert.messageText = "Email, server, and username are required."
+            alert.messageText = "Email address is required."
             alert.runModal()
             return
         }
@@ -866,8 +1123,13 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
             imapPort: imapPort,
             smtpServer: smtpServer.isEmpty ? imapServer : smtpServer,
             smtpPort: smtpPort,
-            username: username,
-            checkIntervalMinutes: max(1, interval)
+            username: username.isEmpty ? email : username,
+            checkIntervalMinutes: max(1, interval),
+            accountType: accountType,
+            maxSendsPerHour: maxPerHour,
+            maxPerRecipientPerDay: maxPerRecipientPerDay,
+            maxSendsPerDay: maxPerDay,
+            rejectDuplicates: rejectDuplicates
         )
 
         if let idx = editIndex {
@@ -906,16 +1168,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let dashboardPort = 9100
     var retryTimer: Timer?
     let accountStore = EmailAccountStore()
+    let floodCounter = FloodCounter()
     var imapFetcher: IMAPFetcher!
     var outboxPoller: OutboxPoller!
     var emailWindowController: EmailAccountsWindowController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Load email accounts and start fetcher + outbox poller
+        // Load email accounts and flood counters
         accountStore.load()
+        floodCounter.load()
         imapFetcher = IMAPFetcher(store: accountStore)
         outboxPoller = OutboxPoller(store: accountStore)
+        outboxPoller.floodCounter = floodCounter
         emailWindowController = EmailAccountsWindowController(store: accountStore, fetcher: imapFetcher)
+        emailWindowController.floodCounter = floodCounter
 
         imapFetcher.onStatusChange = { [weak self] email, status in
             DispatchQueue.main.async {
