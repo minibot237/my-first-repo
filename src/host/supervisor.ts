@@ -294,9 +294,72 @@ Example: {"body": "I have opinions about things and I'm not sorry about it"}`,
   },
 });
 
+// --- Mail outbox (supervisor queues, Minibot.app polls and sends) ---
+interface OutboundEmail {
+  id: string;
+  from: string;
+  to: string;
+  subject: string;
+  body: string;
+  queuedAt: string;
+}
+const mailOutbox: OutboundEmail[] = [];
+(globalThis as any).__mailOutbox = mailOutbox;
+
+actionRegistry.register({
+  name: "send_email",
+  description: "Send an email from minibot. Use when user says 'email', 'send email', 'write to', 'send a message to' (email context).",
+  minTrust: 1.0,
+  schema: {
+    to: "recipient email address",
+    subject: "email subject line",
+    body: "email body text",
+    from: "sender account (optional, defaults to minibot@notverysmart.com)",
+  },
+  actionParamsPrompt: `Extract email parameters from the user's message.
+- to: the recipient email address
+- subject: a short subject line
+- body: the email body text
+- from: (optional) which minibot account to send from
+
+Respond with exactly one JSON object. No other text.
+Example: {"to": "someone@example.com", "subject": "Hello", "body": "Just wanted to say hi."}`,
+  handler: (params) => {
+    const to = String(params.to || "").trim();
+    const subject = String(params.subject || "").trim();
+    const body = String(params.body || "").trim();
+    const from = String(params.from || "minibot@notverysmart.com").trim();
+
+    if (!to || !subject || !body) {
+      return { ok: false, message: "Need to, subject, and body." };
+    }
+
+    const id = `mail-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const email: OutboundEmail = { id, from, to, subject, body, queuedAt: localTimestamp() };
+    mailOutbox.push(email);
+
+    log("mail queued", { id, from, to, subject: subject.slice(0, 60) });
+    emitDashboard("ops", "_mail", { type: "mail_queued", id, from, to, subject });
+
+    return { ok: true, message: `Queued email to ${to} (${id}). Minibot.app will send it shortly.` };
+  },
+});
+
 // --- Handle dashboard commands ---
 bus.on("command", async (cmd: DashboardCommand) => {
   log("dashboard command", { action: cmd.action, containerId: cmd.containerId });
+
+  if (cmd.action === "mail_sent") {
+    const { id, ok, error } = cmd.data as { id: string; ok: boolean; error?: string };
+    if (ok) {
+      log("mail sent", { id });
+      emitDashboard("ops", "_mail", { type: "mail_sent", id });
+    } else {
+      log("mail send failed", { id, error });
+      emitDashboard("ops", "_mail", { type: "mail_error", id, error });
+    }
+    return;
+  }
 
   if (cmd.action === "mail_ingest") {
     const { account, count } = cmd.data as { account: string; count: number };

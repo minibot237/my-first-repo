@@ -159,6 +159,33 @@ export function startDashboard(getSnapshot?: () => StateSnapshot): void {
       return;
     }
 
+    // GET /api/mail-outbox — Minibot.app polls for outbound emails to send
+    if (url.pathname === "/api/mail-outbox" && req.method === "GET") {
+      const queue = (globalThis as any).__mailOutbox as any[] | undefined;
+      const messages = queue?.splice(0, queue.length) ?? [];
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(messages));
+      return;
+    }
+
+    // POST /api/mail-sent — Minibot.app confirms delivery
+    if (url.pathname === "/api/mail-sent" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        try {
+          const payload = JSON.parse(body);
+          bus.emit("command", { action: "mail_sent", containerId: "_mail", data: payload });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } catch {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "bad json" }));
+        }
+      });
+      return;
+    }
+
     // Default: serve dashboard HTML
     if (!fs.existsSync(htmlPath)) {
       res.writeHead(500);

@@ -18,6 +18,7 @@ let distDir = repoDir + "/dist/host"
 let supervisorScript = distDir + "/supervisor.js"
 let logsDir = repoDir + "/logs"
 let imapFetchScript = macosDir + "/imap-fetch.py"
+let smtpSendScript = macosDir + "/smtp-send.py"
 let emailAccountsPath: String = {
     let home = FileManager.default.homeDirectoryForCurrentUser.path
     return home + "/.minibot/email-accounts.json"
@@ -106,11 +107,36 @@ struct EmailAccount: Codable {
     var email: String
     var imapServer: String
     var imapPort: Int
+    var smtpServer: String
+    var smtpPort: Int
     var username: String
     var checkIntervalMinutes: Int
 
     // Keychain key is the email address
     var keychainKey: String { email }
+
+    // Memberwise init
+    init(email: String, imapServer: String, imapPort: Int, smtpServer: String, smtpPort: Int, username: String, checkIntervalMinutes: Int) {
+        self.email = email
+        self.imapServer = imapServer
+        self.imapPort = imapPort
+        self.smtpServer = smtpServer
+        self.smtpPort = smtpPort
+        self.username = username
+        self.checkIntervalMinutes = checkIntervalMinutes
+    }
+
+    // Migration: default SMTP fields for old configs
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        email = try c.decode(String.self, forKey: .email)
+        imapServer = try c.decode(String.self, forKey: .imapServer)
+        imapPort = try c.decode(Int.self, forKey: .imapPort)
+        smtpServer = try c.decodeIfPresent(String.self, forKey: .smtpServer) ?? imapServer
+        smtpPort = try c.decodeIfPresent(Int.self, forKey: .smtpPort) ?? 465
+        username = try c.decode(String.self, forKey: .username)
+        checkIntervalMinutes = try c.decode(Int.self, forKey: .checkIntervalMinutes)
+    }
 }
 
 class EmailAccountStore {
@@ -267,6 +293,117 @@ class IMAPFetcher {
                 NSLog("Minibot: mail-notify %@ count=%d → %d", account, count, http.statusCode)
             }
         }.resume()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Outbox Poller — polls supervisor for outbound emails, sends via SMTP
+// ---------------------------------------------------------------------------
+
+class OutboxPoller {
+    let store: EmailAccountStore
+    var timer: Timer?
+
+    init(store: EmailAccountStore) {
+        self.store = store
+    }
+
+    func start() {
+        // Poll every 5 seconds
+        timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            self?.poll()
+        }
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    private func poll() {
+        guard let url = URL(string: "http://localhost:9100/api/mail-outbox") else { return }
+        let request = URLRequest(url: url, timeoutInterval: 5)
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let data = data,
+                  let messages = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+                  !messages.isEmpty else { return }
+
+            NSLog("Minibot: outbox poll — %d message(s) to send", messages.count)
+            for msg in messages {
+                self?.sendEmail(msg)
+            }
+        }.resume()
+    }
+
+    private func sendEmail(_ msg: [String: Any]) {
+        let id = msg["id"] as? String ?? "unknown"
+        let from = msg["from"] as? String ?? ""
+        let to = msg["to"] as? String ?? ""
+        let subject = msg["subject"] as? String ?? ""
+        let body = msg["body"] as? String ?? ""
+
+        // Find account for the from address
+        guard let account = store.accounts.first(where: { $0.email == from }) else {
+            NSLog("Minibot: outbox — no account for sender %@", from)
+            confirmDelivery(id: id, ok: false, error: "No account configured for \(from)")
+            return
+        }
+
+        guard let password = Keychain.load(account: account.keychainKey) else {
+            NSLog("Minibot: outbox — no password for %@", from)
+            confirmDelivery(id: id, ok: false, error: "No password in Keychain for \(from)")
+            return
+        }
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            proc.arguments = [smtpSendScript, account.smtpServer, "\(account.smtpPort)", account.username, from, to, subject]
+            proc.environment = ["SMTP_PASSWORD": password]
+
+            // Pass body via stdin
+            let stdinPipe = Pipe()
+            proc.standardInput = stdinPipe
+            let stdoutPipe = Pipe()
+            proc.standardOutput = stdoutPipe
+            proc.standardError = FileHandle.nullDevice
+
+            do {
+                try proc.run()
+                stdinPipe.fileHandleForWriting.write(body.data(using: .utf8) ?? Data())
+                stdinPipe.fileHandleForWriting.closeFile()
+                proc.waitUntilExit()
+
+                let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: data, encoding: .utf8) ?? ""
+                NSLog("Minibot: smtp-send %@ → %@ : %@", from, to, output.trimmingCharacters(in: .whitespacesAndNewlines))
+
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let ok = json["ok"] as? Bool, ok {
+                    self?.confirmDelivery(id: id, ok: true, error: nil)
+                } else {
+                    let err = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String ?? "unknown error"
+                    self?.confirmDelivery(id: id, ok: false, error: err)
+                }
+            } catch {
+                NSLog("Minibot: smtp-send error: %@", error.localizedDescription)
+                self?.confirmDelivery(id: id, ok: false, error: error.localizedDescription)
+            }
+        }
+    }
+
+    private func confirmDelivery(id: String, ok: Bool, error: String?) {
+        guard let url = URL(string: "http://localhost:9100/api/mail-sent") else { return }
+        var request = URLRequest(url: url, timeoutInterval: 5)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var payload: [String: Any] = ["id": id, "ok": ok]
+        if let error = error { payload["error"] = error }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
+        URLSession.shared.dataTask(with: request) { _, _, _ in }.resume()
     }
 }
 
@@ -505,8 +642,8 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
         // Reads from the currently open dialog fields
         let server = editFields[1].stringValue.trimmingCharacters(in: .whitespaces)
         let port = editFields[2].stringValue.trimmingCharacters(in: .whitespaces)
-        let username = editFields[3].stringValue.trimmingCharacters(in: .whitespaces)
-        var password = editFields[4].stringValue
+        let username = editFields[5].stringValue.trimmingCharacters(in: .whitespaces)
+        var password = editFields[6].stringValue
 
         guard !server.isEmpty, !username.isEmpty else {
             dialogStatusLabel?.stringValue = "Server and username required."
@@ -602,7 +739,7 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
 
     func showEditDialog(account: EmailAccount?, index: Int?) {
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 340),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 400),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -636,19 +773,23 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
         let emailField = makeField(account?.email ?? "", placeholder: "minibot@notverysmart.com")
         let serverField = makeField(account?.imapServer ?? "", placeholder: "mail.notverysmart.com")
         let portField = makeField(account != nil ? "\(account!.imapPort)" : "993")
+        let smtpServerField = makeField(account?.smtpServer ?? "", placeholder: "mail.notverysmart.com")
+        let smtpPortField = makeField(account != nil ? "\(account!.smtpPort)" : "465")
         let usernameField = makeField(account?.username ?? "", placeholder: "minibot@notverysmart.com")
         let passwordField = makeField("", placeholder: account != nil ? "(unchanged)" : "password", secure: true)
         let intervalField = makeField(account != nil ? "\(account!.checkIntervalMinutes)" : "1")
 
         grid.addRow(with: [makeLabel("Email:"), emailField])
         grid.addRow(with: [makeLabel("IMAP Server:"), serverField])
-        grid.addRow(with: [makeLabel("Port:"), portField])
+        grid.addRow(with: [makeLabel("IMAP Port:"), portField])
+        grid.addRow(with: [makeLabel("SMTP Server:"), smtpServerField])
+        grid.addRow(with: [makeLabel("SMTP Port:"), smtpPortField])
         grid.addRow(with: [makeLabel("Username:"), usernameField])
         grid.addRow(with: [makeLabel("Password:"), passwordField])
         grid.addRow(with: [makeLabel("Check every (min):"), intervalField])
 
-        // Stash fields for save handler
-        editFields = [emailField, serverField, portField, usernameField, passwordField, intervalField]
+        // Stash fields for save handler — order: email, imap server, imap port, smtp server, smtp port, username, password, interval
+        editFields = [emailField, serverField, portField, smtpServerField, smtpPortField, usernameField, passwordField, intervalField]
         editIndex = index
 
         // Check button + status in dialog
@@ -704,13 +845,15 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
 
     @objc func dialogSave(_ sender: NSButton) {
         let email = editFields[0].stringValue.trimmingCharacters(in: .whitespaces)
-        let server = editFields[1].stringValue.trimmingCharacters(in: .whitespaces)
-        let port = Int(editFields[2].stringValue) ?? 993
-        let username = editFields[3].stringValue.trimmingCharacters(in: .whitespaces)
-        let password = editFields[4].stringValue
-        let interval = Int(editFields[5].stringValue) ?? 1
+        let imapServer = editFields[1].stringValue.trimmingCharacters(in: .whitespaces)
+        let imapPort = Int(editFields[2].stringValue) ?? 993
+        let smtpServer = editFields[3].stringValue.trimmingCharacters(in: .whitespaces)
+        let smtpPort = Int(editFields[4].stringValue) ?? 465
+        let username = editFields[5].stringValue.trimmingCharacters(in: .whitespaces)
+        let password = editFields[6].stringValue
+        let interval = Int(editFields[7].stringValue) ?? 1
 
-        guard !email.isEmpty, !server.isEmpty, !username.isEmpty else {
+        guard !email.isEmpty, !imapServer.isEmpty, !username.isEmpty else {
             let alert = NSAlert()
             alert.messageText = "Email, server, and username are required."
             alert.runModal()
@@ -719,8 +862,10 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
 
         let acct = EmailAccount(
             email: email,
-            imapServer: server,
-            imapPort: port,
+            imapServer: imapServer,
+            imapPort: imapPort,
+            smtpServer: smtpServer.isEmpty ? imapServer : smtpServer,
+            smtpPort: smtpPort,
             username: username,
             checkIntervalMinutes: max(1, interval)
         )
@@ -762,12 +907,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var retryTimer: Timer?
     let accountStore = EmailAccountStore()
     var imapFetcher: IMAPFetcher!
+    var outboxPoller: OutboxPoller!
     var emailWindowController: EmailAccountsWindowController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Load email accounts and start fetcher
+        // Load email accounts and start fetcher + outbox poller
         accountStore.load()
         imapFetcher = IMAPFetcher(store: accountStore)
+        outboxPoller = OutboxPoller(store: accountStore)
         emailWindowController = EmailAccountsWindowController(store: accountStore, fetcher: imapFetcher)
 
         imapFetcher.onStatusChange = { [weak self] email, status in
@@ -786,10 +933,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.tryLoadDashboard(timer: timer)
         }
 
-        // Start IMAP fetchers after a short delay (let supervisor start first)
+        // Start IMAP fetchers and outbox poller after a short delay (let supervisor start first)
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
             self?.imapFetcher.startAll()
-            NSLog("Minibot: IMAP fetchers started for %d accounts", self?.accountStore.accounts.count ?? 0)
+            self?.outboxPoller.start()
+            NSLog("Minibot: IMAP fetchers started for %d accounts, outbox poller active", self?.accountStore.accounts.count ?? 0)
         }
     }
 
@@ -995,6 +1143,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        outboxPoller.stop()
         imapFetcher.stopAll()
         stopSupervisor()
     }
