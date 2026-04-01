@@ -166,6 +166,7 @@ class EmailAccountStore {
 class IMAPFetcher {
     let store: EmailAccountStore
     var timers: [String: Timer] = [:]  // keyed by email
+    var onStatusChange: ((String, EmailAccountsWindowController.AccountStatus) -> Void)?
 
     init(store: EmailAccountStore) {
         self.store = store
@@ -204,13 +205,16 @@ class IMAPFetcher {
     private func fetchMail(for account: EmailAccount) {
         guard let password = Keychain.load(account: account.keychainKey) else {
             NSLog("Minibot: no password in keychain for %@", account.email)
+            onStatusChange?(account.email, .error)
             return
         }
 
         let outputDir = emailIngestBase + "/" + account.email
         try? FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
 
-        DispatchQueue.global(qos: .utility).async {
+        onStatusChange?(account.email, .checking)
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
             proc.arguments = [imapFetchScript, account.imapServer, "\(account.imapPort)", account.username, outputDir]
@@ -228,13 +232,22 @@ class IMAPFetcher {
                 let output = String(data: data, encoding: .utf8) ?? ""
                 NSLog("Minibot: imap-fetch %@ → %@", account.email, output.trimmingCharacters(in: .whitespacesAndNewlines))
 
-                // Parse result and notify supervisor if we got mail
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let fetched = json["fetched"] as? Int, fetched > 0 {
-                    self.notifySupervisor(account: account.email, count: fetched)
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    if let error = json["error"] as? String {
+                        NSLog("Minibot: imap-fetch %@ error: %@", account.email, error)
+                        self?.onStatusChange?(account.email, .error)
+                    } else {
+                        self?.onStatusChange?(account.email, .ok)
+                        if let fetched = json["fetched"] as? Int, fetched > 0 {
+                            self?.notifySupervisor(account: account.email, count: fetched)
+                        }
+                    }
+                } else {
+                    self?.onStatusChange?(account.email, .error)
                 }
             } catch {
                 NSLog("Minibot: imap-fetch error for %@: %@", account.email, error.localizedDescription)
+                self?.onStatusChange?(account.email, .error)
             }
         }
     }
@@ -273,6 +286,10 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
     private var statusLabel: NSTextField?
     private var dialogStatusLabel: NSTextField?
 
+    // Per-account status: green/yellow/red
+    enum AccountStatus { case unknown, checking, ok, error }
+    var accountStatus: [String: AccountStatus] = [:]  // keyed by email
+
     init(store: EmailAccountStore, fetcher: IMAPFetcher) {
         self.store = store
         self.fetcher = fetcher
@@ -306,6 +323,7 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
         tv.allowsMultipleSelection = false
 
         let columns: [(String, String, CGFloat)] = [
+            ("status", "", 20),
             ("email", "Email", 200),
             ("server", "IMAP Server", 160),
             ("port", "Port", 50),
@@ -391,6 +409,30 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard let col = tableColumn else { return nil }
         let account = store.accounts[row]
+
+        // Status dot column
+        if col.identifier.rawValue == "status" {
+            let cellId = NSUserInterfaceItemIdentifier("Cell_status")
+            let cell: NSTextField
+            if let existing = tableView.makeView(withIdentifier: cellId, owner: self) as? NSTextField {
+                cell = existing
+            } else {
+                cell = NSTextField(labelWithString: "")
+                cell.identifier = cellId
+                cell.font = NSFont.systemFont(ofSize: 11)
+                cell.alignment = .center
+                cell.isBordered = false
+                cell.drawsBackground = false
+            }
+            let status = accountStatus[account.email] ?? .unknown
+            switch status {
+            case .ok:       cell.stringValue = "🟢"
+            case .error:    cell.stringValue = "🔴"
+            case .checking: cell.stringValue = "🟡"
+            case .unknown:  cell.stringValue = "⚪"
+            }
+            return cell
+        }
 
         let text: String
         switch col.identifier.rawValue {
@@ -484,12 +526,17 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
 
         dialogStatusLabel?.stringValue = "Checking..."
         dialogStatusLabel?.textColor = .secondaryLabelColor
+        NSLog("Minibot: check connection — server=%@ port=%@ user=%@", server, port, username)
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        // Capture the label reference for the closure (modal may block main dispatch)
+        let statusRef = dialogStatusLabel
+
+        DispatchQueue.global(qos: .userInitiated).async {
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
             let script = """
-            import imaplib, json, os, sys
+            import imaplib, json, os, sys, socket
+            socket.setdefaulttimeout(10)
             try:
                 m = imaplib.IMAP4_SSL(sys.argv[1], int(sys.argv[2]))
                 m.login(sys.argv[3], os.environ["IMAP_PASSWORD"])
@@ -508,37 +555,44 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
 
             let pipe = Pipe()
             proc.standardOutput = pipe
-            proc.standardError = FileHandle.nullDevice
+            proc.standardError = Pipe()  // capture stderr too for debugging
 
             do {
                 try proc.run()
+                NSLog("Minibot: check connection — python started (pid %d)", proc.processIdentifier)
                 proc.waitUntilExit()
+                NSLog("Minibot: check connection — python exited (status %d)", proc.terminationStatus)
+
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: data, encoding: .utf8) ?? "no output"
+                NSLog("Minibot: check connection — output: %@", output)
+
                 if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                     let ok = json["ok"] as? Bool ?? false
                     DispatchQueue.main.async {
                         if ok {
                             let unseen = json["unseen"] as? Int ?? 0
                             let boxes = json["mailboxes"] as? Int ?? 0
-                            self?.dialogStatusLabel?.stringValue = "✓ Connected — \(boxes) mailboxes, \(unseen) unseen"
-                            self?.dialogStatusLabel?.textColor = .systemGreen
+                            statusRef?.stringValue = "✓ Connected — \(boxes) mailboxes, \(unseen) unseen"
+                            statusRef?.textColor = .systemGreen
                         } else {
                             let err = json["error"] as? String ?? "unknown error"
-                            self?.dialogStatusLabel?.stringValue = "✗ \(err)"
-                            self?.dialogStatusLabel?.textColor = .systemRed
+                            statusRef?.stringValue = "✗ \(err)"
+                            statusRef?.textColor = .systemRed
                         }
+                        NSLog("Minibot: check connection — UI updated")
                     }
                 } else {
-                    let output = String(data: data, encoding: .utf8) ?? "no output"
                     DispatchQueue.main.async {
-                        self?.dialogStatusLabel?.stringValue = "✗ \(output)"
-                        self?.dialogStatusLabel?.textColor = .systemRed
+                        statusRef?.stringValue = "✗ \(output)"
+                        statusRef?.textColor = .systemRed
                     }
                 }
             } catch {
+                NSLog("Minibot: check connection — process error: %@", error.localizedDescription)
                 DispatchQueue.main.async {
-                    self?.dialogStatusLabel?.stringValue = "✗ \(error.localizedDescription)"
-                    self?.dialogStatusLabel?.textColor = .systemRed
+                    statusRef?.stringValue = "✗ \(error.localizedDescription)"
+                    statusRef?.textColor = .systemRed
                 }
             }
         }
@@ -643,8 +697,9 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
 
         panel.contentView = cv
 
-        // Run as modal
-        NSApp.runModal(for: panel)
+        // Show as a normal window (not modal — modal blocks target-action dispatch)
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc func dialogSave(_ sender: NSButton) {
@@ -683,7 +738,6 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
         }
 
         sender.window?.close()
-        NSApp.stopModal()
         tableView.reloadData()
         fetcher.restart(for: email)
         statusLabel?.stringValue = editIndex != nil ? "Updated \(email)" : "Added \(email)"
@@ -692,7 +746,6 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
 
     @objc func dialogCancel(_ sender: NSButton) {
         sender.window?.close()
-        NSApp.stopModal()
     }
 }
 
@@ -716,6 +769,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         accountStore.load()
         imapFetcher = IMAPFetcher(store: accountStore)
         emailWindowController = EmailAccountsWindowController(store: accountStore, fetcher: imapFetcher)
+
+        imapFetcher.onStatusChange = { [weak self] email, status in
+            DispatchQueue.main.async {
+                self?.emailWindowController.accountStatus[email] = status
+                self?.emailWindowController.tableView?.reloadData()
+            }
+        }
 
         startSupervisor()
         createWindow()
