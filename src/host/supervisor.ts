@@ -301,6 +301,7 @@ bus.on("command", async (cmd: DashboardCommand) => {
   if (cmd.action === "mail_ingest") {
     const { account, count } = cmd.data as { account: string; count: number };
     log("mail ingest notification", { account, count });
+    emitDashboard("ops", "_mail", { type: "mail_notify", account, reported: count });
 
     const ingestDir = path.join(process.cwd(), ".local", "ingest", "email", account);
     const processedDir = path.join(ingestDir, "processed");
@@ -308,11 +309,13 @@ bus.on("command", async (cmd: DashboardCommand) => {
 
     if (!fs.existsSync(ingestDir)) {
       log("mail ingest: directory not found", { dir: ingestDir });
+      emitDashboard("ops", "_mail", { type: "mail_error", account, error: "ingest directory not found" });
       return;
     }
 
     const files = fs.readdirSync(ingestDir).filter(f => f.endsWith(".eml")).sort();
     log("mail ingest: found files", { account, count: files.length });
+    emitDashboard("ops", "_mail", { type: "mail_scan", account, files: files.length });
 
     let processed = 0;
     let flagged = 0;
@@ -323,14 +326,24 @@ bus.on("command", async (cmd: DashboardCommand) => {
         const result = await processEmail(emlPath);
         processed++;
         if (!result.safe) flagged++;
+        emitDashboard("ops", "_mail", {
+          type: "mail_processed",
+          account,
+          file,
+          safe: result.safe,
+          fitScore: result.evaluation.fitScore,
+          sourceId: result.evaluation.source,
+        });
         // Move to processed/
         fs.renameSync(emlPath, path.join(processedDir, file));
       } catch (err) {
         log("mail ingest: file error", { file, error: (err as Error).message });
+        emitDashboard("ops", "_mail", { type: "mail_error", account, file, error: (err as Error).message });
       }
     }
 
     log("mail ingest complete", { account, processed, flagged });
+    emitDashboard("ops", "_mail", { type: "mail_complete", account, processed, flagged });
 
     // Notify via Telegram if we got interesting mail
     if (processed > 0) {

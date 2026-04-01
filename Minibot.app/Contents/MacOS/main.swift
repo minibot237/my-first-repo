@@ -267,6 +267,12 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
     var window: NSWindow?
     var tableView: NSTableView!
 
+    // Dialog state
+    private var editFields: [NSTextField] = []
+    private var editIndex: Int? = nil
+    private var statusLabel: NSTextField?
+    private var dialogStatusLabel: NSTextField?
+
     init(store: EmailAccountStore, fetcher: IMAPFetcher) {
         self.store = store
         self.fetcher = fetcher
@@ -282,22 +288,22 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
         let w: CGFloat = 700
         let h: CGFloat = 400
 
-        let window = NSWindow(
+        let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: w, height: h),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Email Accounts"
-        window.center()
-        window.minSize = NSSize(width: 500, height: 300)
-        window.isReleasedWhenClosed = false
+        win.title = "Email Accounts"
+        win.center()
+        win.minSize = NSSize(width: 500, height: 300)
+        win.isReleasedWhenClosed = false
 
         // --- Table view ---
-        tableView = NSTableView()
-        tableView.headerView = NSTableHeaderView()
-        tableView.usesAlternatingRowBackgroundColors = true
-        tableView.allowsMultipleSelection = false
+        let tv = NSTableView()
+        tv.headerView = NSTableHeaderView()
+        tv.usesAlternatingRowBackgroundColors = true
+        tv.allowsMultipleSelection = false
 
         let columns: [(String, String, CGFloat)] = [
             ("email", "Email", 200),
@@ -310,55 +316,70 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
             col.title = title
             col.width = width
             col.minWidth = 40
-            tableView.addTableColumn(col)
+            tv.addTableColumn(col)
         }
 
-        tableView.dataSource = self
-        tableView.delegate = self
+        tv.dataSource = self
+        tv.delegate = self
+        tv.doubleAction = #selector(editAccount)
+        tv.target = self
+        tableView = tv
 
         let scrollView = NSScrollView()
-        scrollView.documentView = tableView
+        scrollView.documentView = tv
         scrollView.hasVerticalScroller = true
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
-        // --- Buttons ---
-        let addButton = NSButton(title: "+", target: self, action: #selector(addAccount))
-        addButton.bezelStyle = .smallSquare
-        addButton.font = NSFont.systemFont(ofSize: 14, weight: .bold)
+        // --- Buttons (segmented-style at bottom) ---
+        let addBtn = makeButton("+", action: #selector(addAccount))
+        let removeBtn = makeButton("−", action: #selector(removeAccount))
+        let editBtn = makeButton("Edit", action: #selector(editAccount))
+        let fetchBtn = makeButton("Fetch Now", action: #selector(fetchNow))
 
-        let removeButton = NSButton(title: "−", target: self, action: #selector(removeAccount))
-        removeButton.bezelStyle = .smallSquare
-        removeButton.font = NSFont.systemFont(ofSize: 14, weight: .bold)
+        let buttonBar = NSStackView(views: [addBtn, removeBtn, editBtn, fetchBtn])
+        buttonBar.orientation = .horizontal
+        buttonBar.spacing = 6
+        buttonBar.translatesAutoresizingMaskIntoConstraints = false
 
-        let editButton = NSButton(title: "Edit", target: self, action: #selector(editAccount))
-        editButton.bezelStyle = .smallSquare
-
-        let fetchNowButton = NSButton(title: "Fetch Now", target: self, action: #selector(fetchNow))
-        fetchNowButton.bezelStyle = .smallSquare
-
-        let buttonStack = NSStackView(views: [addButton, removeButton, editButton, fetchNowButton])
-        buttonStack.orientation = .horizontal
-        buttonStack.spacing = 4
-        buttonStack.translatesAutoresizingMaskIntoConstraints = false
+        // Status label for feedback
+        let status = NSTextField(labelWithString: "")
+        status.font = NSFont.systemFont(ofSize: 11)
+        status.textColor = .secondaryLabelColor
+        status.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel = status
 
         let contentView = NSView()
         contentView.addSubview(scrollView)
-        contentView.addSubview(buttonStack)
+        contentView.addSubview(buttonBar)
+        contentView.addSubview(status)
 
         NSLayoutConstraint.activate([
             scrollView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
             scrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
             scrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
-            scrollView.bottomAnchor.constraint(equalTo: buttonStack.topAnchor, constant: -8),
+            scrollView.bottomAnchor.constraint(equalTo: buttonBar.topAnchor, constant: -8),
 
-            buttonStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
-            buttonStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
+            buttonBar.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
+            buttonBar.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
+
+            status.leadingAnchor.constraint(equalTo: buttonBar.trailingAnchor, constant: 12),
+            status.centerYAnchor.constraint(equalTo: buttonBar.centerYAnchor),
+            status.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -8),
         ])
 
-        window.contentView = contentView
-        window.makeKeyAndOrderFront(nil)
+        win.contentView = contentView
+        self.window = win
+        win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        self.window = window
+    }
+
+    private func makeButton(_ title: String, action: Selector) -> NSButton {
+        let btn = NSButton(title: title, target: self, action: action)
+        btn.bezelStyle = .rounded
+        if title == "+" || title == "−" {
+            btn.font = NSFont.systemFont(ofSize: 14, weight: .bold)
+        }
+        return btn
     }
 
     // MARK: - Table data source
@@ -396,7 +417,7 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
     // MARK: - Actions
 
     @objc func addAccount() {
-        showAccountSheet(account: nil, index: nil)
+        showEditDialog(account: nil, index: nil)
     }
 
     @objc func removeAccount() {
@@ -410,41 +431,132 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
 
-        if alert.runModal() == .alertFirstButtonReturn {
-            let email = store.accounts[row].email
-            store.remove(at: row)
-            fetcher.timers[email]?.invalidate()
-            fetcher.timers.removeValue(forKey: email)
-            tableView.reloadData()
+        guard let win = window else { return }
+        alert.beginSheetModal(for: win) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self = self else { return }
+            let email = self.store.accounts[row].email
+            self.store.remove(at: row)
+            self.fetcher.timers[email]?.invalidate()
+            self.fetcher.timers.removeValue(forKey: email)
+            self.tableView.reloadData()
         }
     }
 
     @objc func editAccount() {
         let row = tableView.selectedRow
         guard row >= 0 else { return }
-        showAccountSheet(account: store.accounts[row], index: row)
+        showEditDialog(account: store.accounts[row], index: row)
     }
 
     @objc func fetchNow() {
         let row = tableView.selectedRow
-        guard row >= 0 else { return }
+        guard row >= 0 else {
+            statusLabel?.stringValue = "Select an account first."
+            return
+        }
         let account = store.accounts[row]
-        NSLog("Minibot: manual fetch for %@", account.email)
+        statusLabel?.stringValue = "Fetching \(account.email)..."
         fetcher.restart(for: account.email)
     }
 
-    // MARK: - Account edit sheet
+    @objc func checkConnection() {
+        // Reads from the currently open dialog fields
+        let server = editFields[1].stringValue.trimmingCharacters(in: .whitespaces)
+        let port = editFields[2].stringValue.trimmingCharacters(in: .whitespaces)
+        let username = editFields[3].stringValue.trimmingCharacters(in: .whitespaces)
+        var password = editFields[4].stringValue
 
-    func showAccountSheet(account: EmailAccount?, index: Int?) {
-        guard let parentWindow = window else { return }
+        guard !server.isEmpty, !username.isEmpty else {
+            dialogStatusLabel?.stringValue = "Server and username required."
+            dialogStatusLabel?.textColor = .systemOrange
+            return
+        }
 
-        let sheet = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 280),
-            styleMask: [.titled],
+        // If editing and password is blank, try Keychain
+        if password.isEmpty, let idx = editIndex {
+            password = Keychain.load(account: store.accounts[idx].keychainKey) ?? ""
+        }
+        guard !password.isEmpty else {
+            dialogStatusLabel?.stringValue = "Password required to check."
+            dialogStatusLabel?.textColor = .systemOrange
+            return
+        }
+
+        dialogStatusLabel?.stringValue = "Checking..."
+        dialogStatusLabel?.textColor = .secondaryLabelColor
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            let script = """
+            import imaplib, json, os, sys
+            try:
+                m = imaplib.IMAP4_SSL(sys.argv[1], int(sys.argv[2]))
+                m.login(sys.argv[3], os.environ["IMAP_PASSWORD"])
+                status, boxes = m.list()
+                count = len(boxes) if status == "OK" else 0
+                m.select("INBOX", readonly=True)
+                st, data = m.search(None, "UNSEEN")
+                unseen = len(data[0].split()) if st == "OK" and data[0] else 0
+                m.logout()
+                print(json.dumps({"ok": True, "mailboxes": count, "unseen": unseen}))
+            except Exception as e:
+                print(json.dumps({"ok": False, "error": str(e)}))
+            """
+            proc.arguments = ["-c", script, server, port, username]
+            proc.environment = ["IMAP_PASSWORD": password]
+
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = FileHandle.nullDevice
+
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    let ok = json["ok"] as? Bool ?? false
+                    DispatchQueue.main.async {
+                        if ok {
+                            let unseen = json["unseen"] as? Int ?? 0
+                            let boxes = json["mailboxes"] as? Int ?? 0
+                            self?.dialogStatusLabel?.stringValue = "✓ Connected — \(boxes) mailboxes, \(unseen) unseen"
+                            self?.dialogStatusLabel?.textColor = .systemGreen
+                        } else {
+                            let err = json["error"] as? String ?? "unknown error"
+                            self?.dialogStatusLabel?.stringValue = "✗ \(err)"
+                            self?.dialogStatusLabel?.textColor = .systemRed
+                        }
+                    }
+                } else {
+                    let output = String(data: data, encoding: .utf8) ?? "no output"
+                    DispatchQueue.main.async {
+                        self?.dialogStatusLabel?.stringValue = "✗ \(output)"
+                        self?.dialogStatusLabel?.textColor = .systemRed
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self?.dialogStatusLabel?.stringValue = "✗ \(error.localizedDescription)"
+                    self?.dialogStatusLabel?.textColor = .systemRed
+                }
+            }
+        }
+    }
+
+    // MARK: - Edit dialog (modal)
+
+    func showEditDialog(account: EmailAccount?, index: Int?) {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 340),
+            styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
-        sheet.title = account == nil ? "Add Email Account" : "Edit Email Account"
+        panel.title = account == nil ? "Add Email Account" : "Edit Email Account"
+        panel.center()
+        panel.isFloatingPanel = true
+        panel.becomesKeyOnlyIfNeeded = false
 
         let grid = NSGridView(numberOfColumns: 2, rows: 0)
         grid.translatesAutoresizingMaskIntoConstraints = false
@@ -453,23 +565,18 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
         grid.column(at: 0).xPlacement = .trailing
 
         func makeLabel(_ text: String) -> NSTextField {
-            let label = NSTextField(labelWithString: text)
-            label.font = NSFont.systemFont(ofSize: 13)
-            return label
+            let l = NSTextField(labelWithString: text)
+            l.font = NSFont.systemFont(ofSize: 13)
+            return l
         }
         func makeField(_ value: String, placeholder: String = "", secure: Bool = false) -> NSTextField {
-            let field: NSTextField
-            if secure {
-                field = NSSecureTextField()
-            } else {
-                field = NSTextField()
-            }
-            field.stringValue = value
-            field.placeholderString = placeholder
-            field.font = NSFont.systemFont(ofSize: 13)
-            field.translatesAutoresizingMaskIntoConstraints = false
-            field.widthAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
-            return field
+            let f: NSTextField = secure ? NSSecureTextField() : NSTextField()
+            f.stringValue = value
+            f.placeholderString = placeholder
+            f.font = NSFont.systemFont(ofSize: 13)
+            f.translatesAutoresizingMaskIntoConstraints = false
+            f.widthAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
+            return f
         }
 
         let emailField = makeField(account?.email ?? "", placeholder: "minibot@notverysmart.com")
@@ -486,11 +593,30 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
         grid.addRow(with: [makeLabel("Password:"), passwordField])
         grid.addRow(with: [makeLabel("Check every (min):"), intervalField])
 
-        let saveButton = NSButton(title: account == nil ? "Add" : "Save", target: nil, action: nil)
+        // Stash fields for save handler
+        editFields = [emailField, serverField, portField, usernameField, passwordField, intervalField]
+        editIndex = index
+
+        // Check button + status in dialog
+        let checkButton = NSButton(title: "Check Connection", target: self, action: #selector(checkConnection))
+        checkButton.bezelStyle = .rounded
+
+        let dlgStatus = NSTextField(labelWithString: "")
+        dlgStatus.font = NSFont.systemFont(ofSize: 11)
+        dlgStatus.textColor = .secondaryLabelColor
+        dlgStatus.lineBreakMode = .byTruncatingTail
+        dialogStatusLabel = dlgStatus
+
+        let checkRow = NSStackView(views: [checkButton, dlgStatus])
+        checkRow.orientation = .horizontal
+        checkRow.spacing = 8
+        checkRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let saveButton = NSButton(title: account == nil ? "Add" : "Save", target: self, action: #selector(dialogSave(_:)))
         saveButton.bezelStyle = .rounded
         saveButton.keyEquivalent = "\r"
 
-        let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
+        let cancelButton = NSButton(title: "Cancel", target: self, action: #selector(dialogCancel(_:)))
         cancelButton.bezelStyle = .rounded
         cancelButton.keyEquivalent = "\u{1b}"
 
@@ -499,46 +625,35 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
         buttonRow.spacing = 8
         buttonRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let contentView = NSView()
-        contentView.addSubview(grid)
-        contentView.addSubview(buttonRow)
+        let cv = NSView()
+        cv.addSubview(grid)
+        cv.addSubview(checkRow)
+        cv.addSubview(buttonRow)
 
         NSLayoutConstraint.activate([
-            grid.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 20),
-            grid.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
-
-            buttonRow.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 20),
-            buttonRow.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            buttonRow.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16),
+            grid.topAnchor.constraint(equalTo: cv.topAnchor, constant: 20),
+            grid.centerXAnchor.constraint(equalTo: cv.centerXAnchor),
+            checkRow.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 14),
+            checkRow.leadingAnchor.constraint(equalTo: cv.leadingAnchor, constant: 20),
+            checkRow.trailingAnchor.constraint(equalTo: cv.trailingAnchor, constant: -20),
+            buttonRow.topAnchor.constraint(equalTo: checkRow.bottomAnchor, constant: 14),
+            buttonRow.trailingAnchor.constraint(equalTo: cv.trailingAnchor, constant: -20),
+            buttonRow.bottomAnchor.constraint(equalTo: cv.bottomAnchor, constant: -16),
         ])
 
-        sheet.contentView = contentView
+        panel.contentView = cv
 
-        saveButton.target = self
-        saveButton.action = #selector(sheetSave(_:))
-        cancelButton.target = self
-        cancelButton.action = #selector(sheetCancel(_:))
-
-        // Stash context in the sheet for retrieval
-        objc_setAssociatedObject(sheet, "fields", [emailField, serverField, portField, usernameField, passwordField, intervalField], .OBJC_ASSOCIATION_RETAIN)
-        objc_setAssociatedObject(sheet, "editIndex", index as Any, .OBJC_ASSOCIATION_RETAIN)
-
-        parentWindow.beginSheet(sheet)
+        // Run as modal
+        NSApp.runModal(for: panel)
     }
 
-    @objc func sheetSave(_ sender: NSButton) {
-        guard let sheet = sender.window,
-              let parent = sheet.sheetParent,
-              let fields = objc_getAssociatedObject(sheet, "fields") as? [NSTextField] else { return }
-
-        let editIndex = objc_getAssociatedObject(sheet, "editIndex") as? Int
-
-        let email = fields[0].stringValue.trimmingCharacters(in: .whitespaces)
-        let server = fields[1].stringValue.trimmingCharacters(in: .whitespaces)
-        let port = Int(fields[2].stringValue) ?? 993
-        let username = fields[3].stringValue.trimmingCharacters(in: .whitespaces)
-        let password = fields[4].stringValue
-        let interval = Int(fields[5].stringValue) ?? 1
+    @objc func dialogSave(_ sender: NSButton) {
+        let email = editFields[0].stringValue.trimmingCharacters(in: .whitespaces)
+        let server = editFields[1].stringValue.trimmingCharacters(in: .whitespaces)
+        let port = Int(editFields[2].stringValue) ?? 993
+        let username = editFields[3].stringValue.trimmingCharacters(in: .whitespaces)
+        let password = editFields[4].stringValue
+        let interval = Int(editFields[5].stringValue) ?? 1
 
         guard !email.isEmpty, !server.isEmpty, !username.isEmpty else {
             let alert = NSAlert()
@@ -547,7 +662,7 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
             return
         }
 
-        let account = EmailAccount(
+        let acct = EmailAccount(
             email: email,
             imapServer: server,
             imapPort: port,
@@ -556,7 +671,7 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
         )
 
         if let idx = editIndex {
-            store.update(at: idx, account: account, password: password.isEmpty ? nil : password)
+            store.update(at: idx, account: acct, password: password.isEmpty ? nil : password)
         } else {
             guard !password.isEmpty else {
                 let alert = NSAlert()
@@ -564,17 +679,20 @@ class EmailAccountsWindowController: NSObject, NSTableViewDataSource, NSTableVie
                 alert.runModal()
                 return
             }
-            store.add(account, password: password)
+            store.add(acct, password: password)
         }
 
-        parent.endSheet(sheet)
+        sender.window?.close()
+        NSApp.stopModal()
         tableView.reloadData()
         fetcher.restart(for: email)
+        statusLabel?.stringValue = editIndex != nil ? "Updated \(email)" : "Added \(email)"
+        statusLabel?.textColor = .secondaryLabelColor
     }
 
-    @objc func sheetCancel(_ sender: NSButton) {
-        guard let sheet = sender.window, let parent = sheet.sheetParent else { return }
-        parent.endSheet(sheet)
+    @objc func dialogCancel(_ sender: NSButton) {
+        sender.window?.close()
+        NSApp.stopModal()
     }
 }
 
